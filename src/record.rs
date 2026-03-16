@@ -1,11 +1,13 @@
 //! DNS record types, query results, and JSON serialization.
 
+use std::collections::HashMap;
 use std::fmt;
 
+use hickory_resolver::proto::op::ResponseCode as HickoryResponseCode;
 use hickory_resolver::proto::rr::RecordType as HickoryRecordType;
 use serde::Serialize;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum RecordType {
     A,
     Aaaa,
@@ -83,6 +85,74 @@ pub(crate) struct DnsResult {
     pub(crate) host: String,
     pub(crate) record_type: RecordType,
     pub(crate) value: String,
+}
+
+/// Local mirror of the DNS response codes we filter on. Mapped from
+/// hickory's `ResponseCode` via `from_hickory`. Codes we don't recognize
+/// (e.g. NotZone, BADVERS, …) are folded into `Other` so filtering still
+/// works coherently — a user can only request the codes listed here, and
+/// any unknown code never matches.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) enum ResponseCode {
+    NoError,
+    NxDomain,
+    ServFail,
+    Refused,
+    FormErr,
+    NotImp,
+    Other,
+}
+
+impl ResponseCode {
+    /// Parse a code name (case-insensitive). Returns None for unknown names.
+    pub(crate) fn from_str_ci(s: &str) -> Option<Self> {
+        match s.trim().to_lowercase().as_str() {
+            "noerror" | "no-error" => Some(ResponseCode::NoError),
+            "nxdomain" | "nx-domain" => Some(ResponseCode::NxDomain),
+            "servfail" | "serv-fail" => Some(ResponseCode::ServFail),
+            "refused" => Some(ResponseCode::Refused),
+            "formerr" | "form-err" => Some(ResponseCode::FormErr),
+            "notimp" | "not-imp" | "notimpl" => Some(ResponseCode::NotImp),
+            _ => None,
+        }
+    }
+
+    /// Map a hickory `ResponseCode` into our local enum.
+    pub(crate) fn from_hickory(rc: HickoryResponseCode) -> Self {
+        match rc {
+            HickoryResponseCode::NoError => ResponseCode::NoError,
+            HickoryResponseCode::NXDomain => ResponseCode::NxDomain,
+            HickoryResponseCode::ServFail => ResponseCode::ServFail,
+            HickoryResponseCode::Refused => ResponseCode::Refused,
+            HickoryResponseCode::FormErr => ResponseCode::FormErr,
+            HickoryResponseCode::NotImp => ResponseCode::NotImp,
+            _ => ResponseCode::Other,
+        }
+    }
+}
+
+impl fmt::Display for ResponseCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ResponseCode::NoError => write!(f, "NOERROR"),
+            ResponseCode::NxDomain => write!(f, "NXDOMAIN"),
+            ResponseCode::ServFail => write!(f, "SERVFAIL"),
+            ResponseCode::Refused => write!(f, "REFUSED"),
+            ResponseCode::FormErr => write!(f, "FORMERR"),
+            ResponseCode::NotImp => write!(f, "NOTIMP"),
+            ResponseCode::Other => write!(f, "OTHER"),
+        }
+    }
+}
+
+/// Aggregate result of resolving all requested record types for a single
+/// host. `codes` maps each queried record type to the DNS response code
+/// observed (or `None` if the query failed with a transport error rather
+/// than a structured DNS response).
+#[derive(Debug, Clone, Default)]
+pub(crate) struct HostResolution {
+    pub(crate) results: Vec<DnsResult>,
+    pub(crate) codes: HashMap<RecordType, Option<ResponseCode>>,
 }
 
 #[derive(Serialize, Default)]

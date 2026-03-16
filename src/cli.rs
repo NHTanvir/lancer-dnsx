@@ -44,6 +44,16 @@ const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
     "auto-wildcard",
     "wildcard-threshold",
     "wt",
+    "response-code",
+    "rcode",
+    "rc",
+    "response-type-filter",
+    "rtf",
+    "match-regex",
+    "mr",
+    "exclude-regex",
+    "er",
+    "stream",
 ];
 
 /// Rewrite single-dash long flags to double-dash so clap can parse them.
@@ -148,6 +158,34 @@ pub(crate) struct Cli {
     /// Number of concurrent workers
     #[arg(short = 't', long = "threads", default_value_t = 100)]
     pub(crate) threads: usize,
+
+    /// Filter by DNS response code (comma-separated: noerror, nxdomain, servfail, refused, formerr, notimp)
+    #[arg(
+        long = "response-code",
+        visible_aliases = ["rcode", "rc"],
+        value_name = "CODES"
+    )]
+    pub(crate) response_code: Option<String>,
+
+    /// Drop hosts that have any record of these types (comma-separated, e.g. cname,a)
+    #[arg(
+        long = "response-type-filter",
+        visible_alias = "rtf",
+        value_name = "TYPES"
+    )]
+    pub(crate) response_type_filter: Option<String>,
+
+    /// Only include results whose resolved value matches this regex
+    #[arg(long = "match-regex", visible_alias = "mr", value_name = "REGEX")]
+    pub(crate) match_regex: Option<String>,
+
+    /// Exclude results whose resolved value matches this regex
+    #[arg(long = "exclude-regex", visible_alias = "er", value_name = "REGEX")]
+    pub(crate) exclude_regex: Option<String>,
+
+    /// Stream mode: disable wildcard detection, stats, and resume for low-latency / low-memory operation
+    #[arg(long = "stream")]
+    pub(crate) stream: bool,
 
     // ---- wildcard ----
     #[clap(next_help_heading = "Wildcard")]

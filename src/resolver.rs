@@ -14,7 +14,7 @@ use hickory_resolver::{
 };
 
 use crate::cli::Cli;
-use crate::record::{DnsResult, RecordType};
+use crate::record::{DnsResult, HostResolution, RecordType, ResponseCode};
 
 // ---------------------------------------------------------------------------
 // Default resolvers / builders
@@ -454,13 +454,17 @@ impl ResolverPool {
 /// Perform a single record-type lookup against the pool. Picks one resolver
 /// via round-robin, records the outcome for health tracking, and appends any
 /// records to `out`.
+///
+/// Returns the DNS response code observed for this query, or `None` if the
+/// query failed with a transport error (no structured DNS response was
+/// received).
 async fn lookup_type(
     pool: &ResolverPool,
     host: &str,
     rtype: RecordType,
     silent: bool,
     out: &mut Vec<DnsResult>,
-) {
+) -> Option<ResponseCode> {
     let Some((idx, tracked)) = pool.pick() else {
         if !silent {
             eprintln!(
@@ -468,14 +472,19 @@ async fn lookup_type(
                 host, rtype
             );
         }
-        return;
+        return None;
     };
     let resolver = &tracked.resolver;
 
     let mut outcome_ok = true;
+    // On success the resolver returned NoError; on error we extract the
+    // server-supplied code from `NoRecordsFound` (or None for transport
+    // failures). Every branch below writes this exactly once.
+    let rcode: Option<ResponseCode>;
     match rtype {
         RecordType::A => match resolver.ipv4_lookup(host).await {
             Ok(resp) => {
+                rcode = Some(ResponseCode::NoError);
                 for r in resp.iter() {
                     out.push(DnsResult {
                         host: host.to_string(),
@@ -486,12 +495,14 @@ async fn lookup_type(
             }
             Err(e) => {
                 outcome_ok = !is_transport_error(&e);
+                rcode = extract_response_code(&e);
                 handle_lookup_error(host, rtype, &e, silent);
             }
         },
 
         RecordType::Aaaa => match resolver.ipv6_lookup(host).await {
             Ok(resp) => {
+                rcode = Some(ResponseCode::NoError);
                 for r in resp.iter() {
                     out.push(DnsResult {
                         host: host.to_string(),
@@ -502,12 +513,14 @@ async fn lookup_type(
             }
             Err(e) => {
                 outcome_ok = !is_transport_error(&e);
+                rcode = extract_response_code(&e);
                 handle_lookup_error(host, rtype, &e, silent);
             }
         },
 
         RecordType::Mx => match resolver.mx_lookup(host).await {
             Ok(resp) => {
+                rcode = Some(ResponseCode::NoError);
                 for r in resp.iter() {
                     out.push(DnsResult {
                         host: host.to_string(),
@@ -518,12 +531,14 @@ async fn lookup_type(
             }
             Err(e) => {
                 outcome_ok = !is_transport_error(&e);
+                rcode = extract_response_code(&e);
                 handle_lookup_error(host, rtype, &e, silent);
             }
         },
 
         RecordType::Txt => match resolver.txt_lookup(host).await {
             Ok(resp) => {
+                rcode = Some(ResponseCode::NoError);
                 for r in resp.iter() {
                     let txt = r
                         .iter()
@@ -539,12 +554,14 @@ async fn lookup_type(
             }
             Err(e) => {
                 outcome_ok = !is_transport_error(&e);
+                rcode = extract_response_code(&e);
                 handle_lookup_error(host, rtype, &e, silent);
             }
         },
 
         RecordType::Ns => match resolver.ns_lookup(host).await {
             Ok(resp) => {
+                rcode = Some(ResponseCode::NoError);
                 for r in resp.iter() {
                     out.push(DnsResult {
                         host: host.to_string(),
@@ -555,6 +572,7 @@ async fn lookup_type(
             }
             Err(e) => {
                 outcome_ok = !is_transport_error(&e);
+                rcode = extract_response_code(&e);
                 handle_lookup_error(host, rtype, &e, silent);
             }
         },
@@ -571,6 +589,7 @@ async fn lookup_type(
                 resolver.lookup(host, rtype.to_hickory()).await;
             match result {
                 Ok(resp) => {
+                    rcode = Some(ResponseCode::NoError);
                     for record in resp.records() {
                         let value = record.data().map(|d| d.to_string()).unwrap_or_default();
                         if !value.is_empty() {
@@ -584,6 +603,7 @@ async fn lookup_type(
                 }
                 Err(e) => {
                     outcome_ok = !is_transport_error(&e);
+                    rcode = extract_response_code(&e);
                     handle_lookup_error(host, rtype, &e, silent);
                 }
             }
@@ -591,6 +611,18 @@ async fn lookup_type(
     }
 
     pool.record(idx, outcome_ok);
+    rcode
+}
+
+/// Extract a `ResponseCode` from a resolve error when it carries one (i.e.
+/// the server actually replied with NXDOMAIN / SERVFAIL / …). Transport
+/// failures return `None`.
+fn extract_response_code(e: &ResolveError) -> Option<ResponseCode> {
+    if let ResolveErrorKind::NoRecordsFound { response_code, .. } = e.kind() {
+        Some(ResponseCode::from_hickory(*response_code))
+    } else {
+        None
+    }
 }
 
 /// Returns true if this error is a transport / network failure (timeout,
@@ -619,10 +651,11 @@ pub(crate) async fn resolve_host(
     host: String,
     query_types: Vec<RecordType>,
     silent: bool,
-) -> Vec<DnsResult> {
-    let mut results = Vec::new();
+) -> HostResolution {
+    let mut resolution = HostResolution::default();
     for rtype in query_types {
-        lookup_type(pool, &host, rtype, silent, &mut results).await;
+        let code = lookup_type(pool, &host, rtype, silent, &mut resolution.results).await;
+        resolution.codes.insert(rtype, code);
     }
-    results
+    resolution
 }

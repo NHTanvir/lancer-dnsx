@@ -1,6 +1,7 @@
-//! lancer-dnsx -- Phase 3: wildcard DNS detection
+//! lancer-dnsx -- Phase 4: filters (rcode, rtf, regex, stream)
 
 mod cli;
+mod filter;
 mod input;
 mod output;
 mod record;
@@ -16,6 +17,7 @@ use clap::Parser;
 use tokio::io::AsyncWriteExt;
 
 use crate::cli::{normalize_args, Cli};
+use crate::filter::Filters;
 use crate::input::collect_input;
 use crate::output::{format_result, WorkerOutput};
 use crate::record::{HostRecord, RecordType};
@@ -186,18 +188,29 @@ async fn main() -> Result<()> {
         cli.silent,
     )?);
 
+    // Build filters from CLI flags (rcode, rtf, regex). Errors here are
+    // user-facing — bail out before any resolution begins.
+    let filters = Arc::new(Filters::build(&cli)?);
+
     // Build the wildcard cache if either wildcard mode is enabled. Shared
     // across all workers; interior `RwLock` lets workers populate the cache
     // collaboratively (each level is probed at most once).
-    let wildcard_cache: Option<Arc<WildcardCache>> =
-        if cli.wildcard_domain.is_some() || cli.auto_wildcard {
-            Some(Arc::new(WildcardCache::new(
-                cli.wildcard_threshold,
-                cli.silent,
-            )))
-        } else {
-            None
-        };
+    //
+    // Stream mode (-stream) short-circuits wildcard detection: in low-latency
+    // / low-memory mode the user explicitly opts out of these features.
+    let wildcard_cache: Option<Arc<WildcardCache>> = if cli.stream {
+        if !cli.silent && (cli.wildcard_domain.is_some() || cli.auto_wildcard) {
+            eprintln!("[INFO] -stream is set; wildcard detection disabled");
+        }
+        None
+    } else if cli.wildcard_domain.is_some() || cli.auto_wildcard {
+        Some(Arc::new(WildcardCache::new(
+            cli.wildcard_threshold,
+            cli.silent,
+        )))
+    } else {
+        None
+    };
 
     // Collect input hosts
     let hosts = collect_input(cli.list.as_deref(), cli.silent).await?;
@@ -240,10 +253,11 @@ async fn main() -> Result<()> {
         let qtypes_c = Arc::clone(&query_types);
         let wildcard_c = wildcard_cache.as_ref().map(Arc::clone);
         let wd_c = wildcard_domain.clone();
+        let filters_c = Arc::clone(&filters);
 
         let handle = tokio::spawn(async move {
             while let Ok(host) = rx_c.recv().await {
-                let results = resolve_host(
+                let resolution = resolve_host(
                     &pool_c,
                     host.clone(),
                     (*qtypes_c).clone(),
@@ -254,7 +268,8 @@ async fn main() -> Result<()> {
                 // Wildcard filtering: drop results when every A/AAAA IP for
                 // this host is a member of an applicable wildcard set.
                 if let Some(cache) = &wildcard_c {
-                    let host_ips: Vec<IpAddr> = results
+                    let host_ips: Vec<IpAddr> = resolution
+                        .results
                         .iter()
                         .filter_map(|r| match r.record_type {
                             RecordType::A | RecordType::Aaaa => r.value.parse::<IpAddr>().ok(),
@@ -281,8 +296,33 @@ async fn main() -> Result<()> {
                     }
                 }
 
-                if !results.is_empty() {
-                    let _ = out_tx_c.send(WorkerOutput { host, results }).await;
+                // Apply rcode / rtf / regex filters. Fast path when no
+                // filters are configured: take the results as-is.
+                let (results, matched_rcode) = if filters_c.is_empty() {
+                    (resolution.results, None)
+                } else {
+                    // Compute the matched rcode BEFORE apply consumes the
+                    // resolution — needed so the output layer can surface
+                    // hosts that matched a code filter but produced no
+                    // records (e.g. NXDOMAIN under `-rcode nxdomain`).
+                    let matched = filters_c.matched_rcode(&resolution);
+                    match filters_c.apply(resolution) {
+                        Some(r) => (r, matched),
+                        None => continue,
+                    }
+                };
+
+                // Forward when we have records OR when an rcode filter
+                // matched a record-less response (e.g. NXDOMAIN). The
+                // latter is the whole point of `-rcode nxdomain`.
+                if !results.is_empty() || matched_rcode.is_some() {
+                    let _ = out_tx_c
+                        .send(WorkerOutput {
+                            host,
+                            results,
+                            matched_rcode,
+                        })
+                        .await;
                 }
             }
         });
@@ -315,6 +355,25 @@ async fn main() -> Result<()> {
             if !wo.results.is_empty() {
                 let rec = HostRecord::from_results(&wo.host, &wo.results);
                 let line = serde_json::to_string(&rec)?;
+                println!("{line}");
+                if let Some(ref mut fh) = output_file {
+                    if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {
+                        eprintln!("[ERROR] Failed to write output: {e}");
+                    }
+                }
+            }
+        } else if wo.results.is_empty() {
+            // Host matched an `-rcode` filter but produced no records
+            // (e.g. NXDOMAIN). Surface the host with the matched code so
+            // the user actually sees the result they filtered for.
+            if let Some(code) = wo.matched_rcode {
+                let line = if resp || resp_only {
+                    format!("{} [{}]", wo.host, code)
+                } else if printed_hosts.insert(wo.host.clone()) {
+                    wo.host.clone()
+                } else {
+                    continue;
+                };
                 println!("{line}");
                 if let Some(ref mut fh) = output_file {
                     if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {

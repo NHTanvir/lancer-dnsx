@@ -1,6 +1,6 @@
 //! Output formatting and the worker -> output channel payload type.
 
-use crate::record::DnsResult;
+use crate::record::{DnsResult, ResponseCode};
 
 /// Format a single DNS result for output.
 ///
@@ -23,7 +23,12 @@ pub(crate) fn format_result(
 }
 
 /// The payload sent from workers to the output loop.
+///
+/// `matched_rcode` is set when the host produced no records but matched an
+/// `-rcode` filter (e.g. NXDOMAIN for a non-existent name): we still surface
+/// the host so the user sees the result they explicitly asked for.
 pub(crate) struct WorkerOutput {
     pub(crate) host: String,
     pub(crate) results: Vec<DnsResult>,
+    pub(crate) matched_rcode: Option<ResponseCode>,
 }
