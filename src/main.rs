@@ -376,9 +376,9 @@ fn parse_type_list(s: &str) -> Vec<RecordType> {
 
 /// Determine which record types to query based on CLI flags.
 fn active_query_types(cli: &Cli) -> Vec<RecordType> {
-    if cli.recon {
+    let mut types: Vec<RecordType> = if cli.recon {
         // -recon queries all common types (skip AXFR/ANY by default)
-        return vec![
+        vec![
             RecordType::A,
             RecordType::Aaaa,
             RecordType::Cname,
@@ -389,50 +389,52 @@ fn active_query_types(cli: &Cli) -> Vec<RecordType> {
             RecordType::Srv,
             RecordType::Soa,
             RecordType::Caa,
-        ];
-    }
+        ]
+    } else {
+        let mut t = vec![];
 
-    let mut types = vec![];
+        // A is the default unless the user explicitly asked for other types
+        if cli.query_a || !any_explicit_type_flag(cli) {
+            t.push(RecordType::A);
+        }
+        if cli.query_aaaa {
+            t.push(RecordType::Aaaa);
+        }
+        if cli.cname {
+            t.push(RecordType::Cname);
+        }
+        if cli.mx {
+            t.push(RecordType::Mx);
+        }
+        if cli.txt {
+            t.push(RecordType::Txt);
+        }
+        if cli.ns {
+            t.push(RecordType::Ns);
+        }
+        if cli.ptr {
+            t.push(RecordType::Ptr);
+        }
+        if cli.srv {
+            t.push(RecordType::Srv);
+        }
+        if cli.soa {
+            t.push(RecordType::Soa);
+        }
+        if cli.caa {
+            t.push(RecordType::Caa);
+        }
+        if cli.any {
+            t.push(RecordType::Any);
+        }
+        if cli.axfr {
+            t.push(RecordType::Axfr);
+        }
 
-    // A is the default unless the user explicitly asked for other types
-    if cli.query_a || !any_explicit_type_flag(cli) {
-        types.push(RecordType::A);
-    }
-    if cli.query_aaaa {
-        types.push(RecordType::Aaaa);
-    }
-    if cli.cname {
-        types.push(RecordType::Cname);
-    }
-    if cli.mx {
-        types.push(RecordType::Mx);
-    }
-    if cli.txt {
-        types.push(RecordType::Txt);
-    }
-    if cli.ns {
-        types.push(RecordType::Ns);
-    }
-    if cli.ptr {
-        types.push(RecordType::Ptr);
-    }
-    if cli.srv {
-        types.push(RecordType::Srv);
-    }
-    if cli.soa {
-        types.push(RecordType::Soa);
-    }
-    if cli.caa {
-        types.push(RecordType::Caa);
-    }
-    if cli.any {
-        types.push(RecordType::Any);
-    }
-    if cli.axfr {
-        types.push(RecordType::Axfr);
-    }
+        t
+    };
 
-    // Apply -exclude-type filter
+    // Apply -exclude-type filter (runs for BOTH recon and non-recon paths)
     if let Some(ref excl) = cli.exclude_type {
         let excluded = parse_type_list(excl);
         types.retain(|t| !excluded.contains(t));
