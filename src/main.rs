@@ -1,5 +1,6 @@
 //! lancer-dnsx — Phase 0: skeleton and A/AAAA resolve
 
+use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
@@ -7,10 +8,10 @@ use anyhow::Result;
 use clap::Parser;
 use hickory_resolver::{
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
+    error::ResolveErrorKind,
     TokioAsyncResolver,
 };
-use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::mpsc;
+use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Known multi-character long flags (without leading dashes).
 /// Any `-flag` that appears in this list gets rewritten to `--flag`
@@ -77,11 +78,11 @@ struct Cli {
     // ---- query type ----
     #[clap(next_help_heading = "Query")]
     /// Query A records (default)
-    #[arg(short = 'a', long = "a", default_value_t = false)]
+    #[arg(short = 'a')]
     query_a: bool,
 
     /// Query AAAA records
-    #[arg(long = "aaaa", default_value_t = false)]
+    #[arg(long = "aaaa")]
     query_aaaa: bool,
 
     // ---- filter ----
@@ -93,32 +94,26 @@ struct Cli {
     // ---- output ----
     #[clap(next_help_heading = "Output")]
     /// Show full response value alongside host (format: "host TYPE value")
-    #[arg(long = "resp", visible_alias = "re", default_value_t = false)]
+    #[arg(long = "resp", visible_alias = "re")]
     resp: bool,
 
     /// Show only the response value (IP address)
-    #[arg(long = "resp-only", visible_alias = "ro", default_value_t = false)]
+    #[arg(long = "resp-only", visible_alias = "ro")]
     resp_only: bool,
 
     /// Suppress banner and non-result output
-    #[arg(long = "silent", default_value_t = false)]
+    #[arg(long = "silent")]
     silent: bool,
 
     /// Disable ANSI color output
     /// Phase 0: output is plain text with no ANSI codes; this flag is wired
     /// through to format_result so future color output can be suppressed.
-    #[arg(long = "no-color", default_value_t = false)]
+    #[arg(long = "no-color")]
     no_color: bool,
 
     /// Write output to file
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     output: Option<String>,
-
-    // ---- optimization ----
-    #[clap(next_help_heading = "Optimization")]
-    /// (reserved for future rate-limit / concurrency flags)
-    #[arg(skip)]
-    _optimization_placeholder: (),
 
     // ---- configurations ----
     #[clap(next_help_heading = "Configurations")]
@@ -133,7 +128,7 @@ struct Cli {
     // ---- debug ----
     #[clap(next_help_heading = "Debug")]
     /// Print version and exit
-    #[arg(short = 'v', long = "version", default_value_t = false)]
+    #[arg(short = 'v', long = "version")]
     version: bool,
 }
 
@@ -185,10 +180,25 @@ fn build_resolver(
 // Resolution helpers
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy)]
+enum RecordType {
+    A,
+    Aaaa,
+}
+
+impl fmt::Display for RecordType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RecordType::A => write!(f, "A"),
+            RecordType::Aaaa => write!(f, "AAAA"),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct DnsResult {
     host: String,
-    record_type: String,
+    record_type: RecordType,
     value: String,
 }
 
@@ -197,6 +207,7 @@ async fn resolve_host(
     host: String,
     query_a: bool,
     query_aaaa: bool,
+    silent: bool,
 ) -> Vec<DnsResult> {
     let mut results = Vec::new();
 
@@ -210,12 +221,19 @@ async fn resolve_host(
                 for record in response.iter() {
                     results.push(DnsResult {
                         host: host.clone(),
-                        record_type: "A".to_string(),
+                        record_type: RecordType::A,
                         value: record.to_string(),
                     });
                 }
             }
-            Err(_) => {}
+            Err(e) => match e.kind() {
+                ResolveErrorKind::NoRecordsFound { .. } => {}
+                _ => {
+                    if !silent {
+                        eprintln!("[WARN] {} A: {}", host, e);
+                    }
+                }
+            },
         }
     }
 
@@ -225,12 +243,19 @@ async fn resolve_host(
                 for record in response.iter() {
                     results.push(DnsResult {
                         host: host.clone(),
-                        record_type: "AAAA".to_string(),
+                        record_type: RecordType::Aaaa,
                         value: record.to_string(),
                     });
                 }
             }
-            Err(_) => {}
+            Err(e) => match e.kind() {
+                ResolveErrorKind::NoRecordsFound { .. } => {}
+                _ => {
+                    if !silent {
+                        eprintln!("[WARN] {} AAAA: {}", host, e);
+                    }
+                }
+            },
         }
     }
 
@@ -241,7 +266,7 @@ async fn resolve_host(
 // Input collection
 // ---------------------------------------------------------------------------
 
-async fn collect_input(list: Option<&str>) -> Result<Vec<String>> {
+async fn collect_input(list: Option<&str>, silent: bool) -> Result<Vec<String>> {
     let mut hosts: Vec<String> = Vec::new();
 
     if let Some(arg) = list {
@@ -260,10 +285,19 @@ async fn collect_input(list: Option<&str>) -> Result<Vec<String>> {
                     }
                     return Ok(hosts);
                 }
-                Err(_) => {
-                    // Not a file — treat as a single hostname
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    // Warn if it looks like a filename that should have existed
+                    if arg.ends_with(".txt") || arg.ends_with(".lst") {
+                        if !silent {
+                            eprintln!("[WARN] File not found: {arg}, treating as hostname");
+                        }
+                    }
+                    // Treat as a single hostname
                     hosts.push(arg.trim().to_string());
                     return Ok(hosts);
+                }
+                Err(e) => {
+                    return Err(anyhow::anyhow!("Cannot open input file '{}': {}", arg, e));
                 }
             }
         } else {
@@ -298,6 +332,10 @@ async fn collect_input(list: Option<&str>) -> Result<Vec<String>> {
 
 /// Format a single DNS result for output.
 ///
+/// - Default (no `-resp`, no `-resp-only`): print just the hostname
+/// - `-resp` / `-re`: print `host TYPE value`
+/// - `-resp-only` / `-ro`: print just `value`
+///
 /// `no_color`: when true, suppress any ANSI escape codes. Phase 0 emits only
 /// plain text, so this flag is a no-op today but is wired through so that
 /// future color formatting can check it.
@@ -305,11 +343,9 @@ fn format_result(result: &DnsResult, resp: bool, resp_only: bool, _no_color: boo
     if resp_only {
         result.value.clone()
     } else if resp {
-        // "-resp" appends the resolved value alongside host and record type,
-        // without brackets (spec: "host TYPE value").
         format!("{} {} {}", result.host, result.record_type, result.value)
     } else {
-        format!("{} {} {}", result.host, result.record_type, result.value)
+        result.host.clone()
     }
 }
 
@@ -343,7 +379,7 @@ async fn main() -> Result<()> {
     let resolver = Arc::new(build_resolver(&servers, cli.timeout, cli.retry)?);
 
     // Collect input hosts
-    let hosts = collect_input(cli.list.as_deref()).await?;
+    let hosts = collect_input(cli.list.as_deref(), cli.silent).await?;
 
     if hosts.is_empty() {
         if !cli.silent {
@@ -352,48 +388,38 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Prepare optional output file
-    let output_file: Option<Arc<tokio::sync::Mutex<tokio::fs::File>>> =
-        if let Some(ref path) = cli.output {
-            let f = tokio::fs::File::create(path).await?;
-            Some(Arc::new(tokio::sync::Mutex::new(f)))
-        } else {
-            None
-        };
+    // Prepare optional output file (plain, no mutex needed — writes are single-threaded)
+    let mut output_file: Option<tokio::fs::File> = if let Some(ref path) = cli.output {
+        let f = tokio::fs::File::create(path).await?;
+        Some(f)
+    } else {
+        None
+    };
 
-    // Worker pool via bounded mpsc channel
-    let (tx, rx) = mpsc::channel::<String>(cli.threads * 2);
-    let rx = Arc::new(tokio::sync::Mutex::new(rx));
+    // Worker pool via async-channel (MPMC — each worker clones the receiver directly)
+    let (tx, rx) = async_channel::bounded::<String>(cli.threads * 2);
 
-    // Output channel
-    let (out_tx, mut out_rx) = mpsc::channel::<Vec<DnsResult>>(cli.threads * 2);
+    // Output channel (tokio mpsc is fine here; workers send, main loop drains)
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<DnsResult>>(cli.threads * 2);
 
     // Spawn N worker tasks
     let num_workers = cli.threads.min(hosts.len()).max(1);
     let query_a = cli.query_a;
     let query_aaaa = cli.query_aaaa;
+    let silent = cli.silent;
 
     let mut worker_handles = Vec::with_capacity(num_workers);
     for _ in 0..num_workers {
         let resolver_c = Arc::clone(&resolver);
-        let rx_c = Arc::clone(&rx);
+        let rx_c = rx.clone();
         let out_tx_c = out_tx.clone();
 
         let handle = tokio::spawn(async move {
-            loop {
-                let host = {
-                    let mut guard = rx_c.lock().await;
-                    guard.recv().await
-                };
-                match host {
-                    None => break,
-                    Some(h) => {
-                        let results =
-                            resolve_host(Arc::clone(&resolver_c), h, query_a, query_aaaa).await;
-                        if !results.is_empty() {
-                            let _ = out_tx_c.send(results).await;
-                        }
-                    }
+            while let Ok(host) = rx_c.recv().await {
+                let results =
+                    resolve_host(Arc::clone(&resolver_c), host, query_a, query_aaaa, silent).await;
+                if !results.is_empty() {
+                    let _ = out_tx_c.send(results).await;
                 }
             }
         });
@@ -416,14 +442,25 @@ async fn main() -> Result<()> {
     let resp_only = cli.resp_only;
     let no_color = cli.no_color;
 
-    use tokio::io::AsyncWriteExt;
+    // Deduplicate printed hosts when using default (hostname-only) output
+    let mut printed_hosts: std::collections::HashSet<String> = std::collections::HashSet::new();
+
     while let Some(batch) = out_rx.recv().await {
         for result in &batch {
             let line = format_result(result, resp, resp_only, no_color);
+
+            // In default mode, only print a hostname once (multiple A records → one line)
+            if !resp && !resp_only {
+                if !printed_hosts.insert(result.host.clone()) {
+                    continue;
+                }
+            }
+
             println!("{line}");
-            if let Some(ref fh) = output_file {
-                let mut guard = fh.lock().await;
-                let _ = guard.write_all(format!("{line}\n").as_bytes()).await;
+            if let Some(ref mut fh) = output_file {
+                if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {
+                    eprintln!("[ERROR] Failed to write output: {e}");
+                }
             }
         }
     }
