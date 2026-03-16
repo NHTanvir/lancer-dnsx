@@ -60,6 +60,10 @@ const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
     "trace-max-recursion",
     "cdn",
     "asn",
+    "stats",
+    "resume",
+    "hc",
+    "health-check",
 ];
 
 /// Rewrite single-dash long flags to double-dash so clap can parse them.
@@ -290,9 +294,23 @@ pub(crate) struct Cli {
     #[arg(long = "trace-max-recursion", default_value_t = 255)]
     pub(crate) trace_max_recursion: u32,
 
+    // ---- optimization ----
+    #[clap(next_help_heading = "Optimization")]
+    /// Show a live progress bar with QPS, errors, and drop counters
+    #[arg(long = "stats")]
+    pub(crate) stats: bool,
+
+    /// Resume from a previous run by skipping hosts listed in resume.cfg
+    #[arg(long = "resume")]
+    pub(crate) resume: bool,
+
     // ---- debug ----
     #[clap(next_help_heading = "Debug")]
     /// Print version and exit
     #[arg(short = 'v', long = "version")]
     pub(crate) version: bool,
+
+    /// Run resolver / hostsfile / disk healthcheck and exit
+    #[arg(long = "hc", visible_alias = "health-check")]
+    pub(crate) hc: bool,
 }

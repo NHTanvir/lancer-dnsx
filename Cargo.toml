@@ -26,6 +26,9 @@ rand = "0.8"
 regex = "1"
 ipnet = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+dashmap = "6"
+redb = "2"
+indicatif = "0.17"
 
 [profile.release]
 opt-level = 3

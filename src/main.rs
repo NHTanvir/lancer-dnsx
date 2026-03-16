@@ -6,10 +6,14 @@ mod brute;
 mod cdn;
 mod cli;
 mod filter;
+mod healthcheck;
+mod hybrid_map;
 mod input;
 mod output;
 mod record;
 mod resolver;
+mod resume;
+mod stats;
 mod trace;
 mod wildcard;
 
@@ -25,10 +29,13 @@ use crate::asn::AsnLookup;
 use crate::cdn::CdnMatcher;
 use crate::cli::{normalize_args, Cli};
 use crate::filter::Filters;
+use crate::hybrid_map::HybridMap;
 use crate::input::collect_input;
 use crate::output::{append_annotations, format_result, WorkerOutput};
 use crate::record::{AsnAnnotation, CdnAnnotation, HostRecord, RecordType};
 use crate::resolver::{load_resolvers, resolve_host, ResolverPool};
+use crate::resume::{ResumeState, DEFAULT_FILENAME as RESUME_FILENAME};
+use crate::stats::Stats;
 use crate::wildcard::WildcardCache;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -216,6 +223,12 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Handle -hc/--health-check early -- runs probes and exits.
+    if cli.hc {
+        let ok = healthcheck::run(VERSION).await?;
+        std::process::exit(if ok { 0 } else { 1 });
+    }
+
     // Validate --wildcard-domain looks like a domain name (not a URL, IP, or
     // bare label). We do this early so a typo fails fast before any
     // resolvers are loaded.
@@ -289,6 +302,64 @@ async fn main() -> Result<()> {
             eprintln!("No input provided. Use -l <file> or pipe hostnames via stdin.");
         }
         return Ok(());
+    }
+
+    // Phase 8: -resume -- load resume.cfg and skip hosts already done.
+    let resume_state: Option<Arc<ResumeState>> = if cli.resume {
+        let state = ResumeState::load(RESUME_FILENAME)?;
+        if !cli.silent && state.done_count() > 0 {
+            eprintln!(
+                "[INFO] -resume: skipping {} host(s) from previous run",
+                state.done_count()
+            );
+        }
+        Some(Arc::new(state))
+    } else {
+        None
+    };
+    let hosts: Vec<String> = if let Some(state) = &resume_state {
+        hosts.into_iter().filter(|h| !state.is_done(h)).collect()
+    } else {
+        hosts
+    };
+    if hosts.is_empty() {
+        if !cli.silent {
+            eprintln!("[INFO] All hosts already completed (per resume.cfg).");
+        }
+        return Ok(());
+    }
+
+    // Phase 8: -stats -- live progress bar + counters. The bar is only
+    // attached when both -stats and !-silent (silent mode owns the TTY).
+    // Without -stats we still construct a Stats so worker plumbing stays
+    // uniform, but no bar is attached.
+    let stats: Arc<Stats> = if cli.stats && !cli.silent {
+        Arc::new(Stats::with_bar(hosts.len() as u64))
+    } else {
+        Arc::new(Stats::new())
+    };
+
+    // Phase 8: hybrid dedup map -- always active. Disk spill only once we
+    // exceed 100k unique hosts. The redb file lives in the temp dir so the
+    // working directory stays clean.
+    let hybrid_path = std::env::temp_dir().join("lancer-dnsx-dedup.redb");
+    // Best-effort cleanup of any stale file from a previous run.
+    let _ = std::fs::remove_file(&hybrid_path);
+    let hybrid: Arc<HybridMap> = Arc::new(HybridMap::new(100_000, &hybrid_path));
+
+    // Phase 8: Ctrl-C handler -- flush resume.cfg on graceful shutdown.
+    if let Some(state) = &resume_state {
+        let state_c = Arc::clone(state);
+        tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                if let Err(e) = state_c.save() {
+                    eprintln!("[WARN] resume: flush on Ctrl-C failed: {e}");
+                } else {
+                    eprintln!("[INFO] resume: state flushed on Ctrl-C");
+                }
+                std::process::exit(130);
+            }
+        });
     }
 
     // Determine which record types to query (computed once, shared via Arc)
@@ -496,9 +567,18 @@ async fn main() -> Result<()> {
         let filters_c = Arc::clone(&filters);
         let cdn_c = cdn_matcher.as_ref().map(Arc::clone);
         let asn_c = asn_lookup.as_ref().map(Arc::clone);
+        let stats_c = Arc::clone(&stats);
+        let hybrid_c = Arc::clone(&hybrid);
+        let resume_c = resume_state.as_ref().map(Arc::clone);
 
         let handle = tokio::spawn(async move {
             while let Ok(host) = rx_c.recv().await {
+                // Hybrid dedup: skip hosts we've already processed in this
+                // run (or carried over from disk spill).
+                if !hybrid_c.insert(&host) {
+                    stats_c.inc_dropped();
+                    continue;
+                }
                 let resolution = resolve_host(
                     &pool_c,
                     host.clone(),
@@ -533,6 +613,10 @@ async fn main() -> Result<()> {
                             if !silent {
                                 eprintln!("[INFO] Dropping wildcard match: {host}");
                             }
+                            stats_c.inc_dropped();
+                            if let Some(rs) = &resume_c {
+                                rs.mark_done(&host);
+                            }
                             continue;
                         }
                     }
@@ -550,7 +634,13 @@ async fn main() -> Result<()> {
                     let matched = filters_c.matched_rcode(&resolution);
                     match filters_c.apply(resolution) {
                         Some(r) => (r, matched),
-                        None => continue,
+                        None => {
+                            stats_c.inc_dropped();
+                            if let Some(rs) = &resume_c {
+                                rs.mark_done(&host);
+                            }
+                            continue;
+                        }
                     }
                 };
 
@@ -594,6 +684,10 @@ async fn main() -> Result<()> {
                 // matched a record-less response (e.g. NXDOMAIN). The
                 // latter is the whole point of `-rcode nxdomain`.
                 if !results.is_empty() || matched_rcode.is_some() {
+                    stats_c.inc_resolved();
+                    if let Some(rs) = &resume_c {
+                        rs.mark_done(&host);
+                    }
                     let _ = out_tx_c
                         .send(WorkerOutput {
                             host,
@@ -603,6 +697,13 @@ async fn main() -> Result<()> {
                             asn: asn_annotations,
                         })
                         .await;
+                } else {
+                    // No records and no matching rcode -> treat as error
+                    // (transport failure or NXDOMAIN without filter match).
+                    stats_c.inc_error();
+                    if let Some(rs) = &resume_c {
+                        rs.mark_done(&host);
+                    }
                 }
             }
         });
@@ -690,6 +791,16 @@ async fn main() -> Result<()> {
     feed_handle.await?;
     for h in worker_handles {
         h.await?;
+    }
+
+    // Phase 8: final flush of resume state + stats summary.
+    if let Some(state) = &resume_state {
+        if let Err(e) = state.save() {
+            eprintln!("[WARN] resume: final save failed: {e}");
+        }
+    }
+    if cli.stats {
+        stats.finish();
     }
 
     // Warn if the pool ended fully evicted
