@@ -17,6 +17,9 @@ hickory-resolver = { version = "0.24", features = [
     "dns-over-tls",
     "webpki-roots",
 ] }
+hickory-client = "0.24"
+hickory-proto = "0.24"
+futures-util = "0.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rand = "0.8"

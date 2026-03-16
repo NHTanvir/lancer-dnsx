@@ -54,6 +54,8 @@ const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
     "exclude-regex",
     "er",
     "stream",
+    "trace",
+    "trace-max-recursion",
 ];
 
 /// Rewrite single-dash long flags to double-dash so clap can parse them.
@@ -257,6 +259,16 @@ pub(crate) struct Cli {
         visible_aliases = ["rL", "resolver-list"]
     )]
     pub(crate) resolver_list: Option<String>,
+
+    // ---- probe ----
+    #[clap(next_help_heading = "Probe")]
+    /// DNS trace mode (recursive root-to-authoritative walk per host)
+    #[arg(long = "trace")]
+    pub(crate) trace: bool,
+
+    /// Maximum recursion depth for -trace
+    #[arg(long = "trace-max-recursion", default_value_t = 255)]
+    pub(crate) trace_max_recursion: u32,
 
     // ---- debug ----
     #[clap(next_help_heading = "Debug")]

@@ -1,11 +1,13 @@
-//! lancer-dnsx -- Phase 4: filters (rcode, rtf, regex, stream)
+//! lancer-dnsx -- Phase 5: DNS trace and AXFR
 
+mod axfr;
 mod cli;
 mod filter;
 mod input;
 mod output;
 mod record;
 mod resolver;
+mod trace;
 mod wildcard;
 
 use std::collections::HashSet;
@@ -44,6 +46,24 @@ fn any_explicit_type_flag(cli: &Cli) -> bool {
         || cli.caa
         || cli.any
         || cli.axfr
+}
+
+/// True if any record-type flag other than -axfr is set. Used to decide
+/// whether `-axfr` should route through the dedicated Phase 5 AXFR
+/// implementation (alone) or be folded into the regular lookup pipeline
+/// alongside e.g. `-a -axfr`.
+fn any_non_axfr_type_flag(cli: &Cli) -> bool {
+    cli.query_a
+        || cli.query_aaaa
+        || cli.cname
+        || cli.mx
+        || cli.txt
+        || cli.ns
+        || cli.ptr
+        || cli.srv
+        || cli.soa
+        || cli.caa
+        || cli.any
 }
 
 /// Parse a comma-separated type list into RecordType values.
@@ -247,6 +267,47 @@ async fn main() -> Result<()> {
     } else {
         None
     };
+
+    // ---- Phase 5: standalone probe modes -------------------------------
+    // -trace short-circuits normal resolution.
+    if cli.trace {
+        for host in &hosts {
+            match trace::trace_host(host, cli.trace_max_recursion).await {
+                Ok(steps) => {
+                    let text = trace::format_trace_text(host, &steps);
+                    print!("{text}");
+                    write_line(&mut output_file, text.trim_end()).await;
+                }
+                Err(e) => {
+                    if !cli.silent {
+                        eprintln!("[WARN] trace {host}: {e}");
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+
+    // -axfr (when set alone, or as the only active record type) routes to
+    // the dedicated AXFR implementation instead of the regular lookup path.
+    if cli.axfr && !cli.recon && !any_non_axfr_type_flag(&cli) {
+        for host in &hosts {
+            match axfr::axfr_host(host, &pool).await {
+                Ok(report) => {
+                    let text = axfr::format_axfr_text(&report);
+                    print!("{text}");
+                    write_line(&mut output_file, text.trim_end()).await;
+                }
+                Err(e) => {
+                    if !cli.silent {
+                        eprintln!("[WARN] axfr {host}: {e}");
+                    }
+                }
+            }
+        }
+        return Ok(());
+    }
+    // -------------------------------------------------------------------
 
     // Worker pool via async-channel (MPMC)
     let (tx, rx) = async_channel::bounded::<String>(cli.threads * 2);
