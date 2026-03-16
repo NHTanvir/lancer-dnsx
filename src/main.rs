@@ -308,24 +308,6 @@ impl RecordType {
         }
     }
 
-    /// The JSON field name for this record type.
-    #[allow(dead_code)]
-    fn json_key(self) -> &'static str {
-        match self {
-            RecordType::A => "a",
-            RecordType::Aaaa => "aaaa",
-            RecordType::Cname => "cname",
-            RecordType::Mx => "mx",
-            RecordType::Txt => "txt",
-            RecordType::Ns => "ns",
-            RecordType::Ptr => "ptr",
-            RecordType::Srv => "srv",
-            RecordType::Soa => "soa",
-            RecordType::Caa => "caa",
-            RecordType::Any => "any",
-            RecordType::Axfr => "axfr",
-        }
-    }
 }
 
 impl fmt::Display for RecordType {
@@ -533,33 +515,15 @@ async fn lookup_type(
             Err(e) => handle_lookup_error(host, rtype, &e, silent),
         },
 
-        // Generic lookup for CNAME, PTR, SRV, SOA, CAA, ANY
+        // Generic lookup for CNAME, PTR, SRV, SOA, CAA, ANY, AXFR
         RecordType::Cname
         | RecordType::Ptr
         | RecordType::Srv
         | RecordType::Soa
         | RecordType::Caa
-        | RecordType::Any => {
+        | RecordType::Any
+        | RecordType::Axfr => {
             match resolver.lookup(host, rtype.to_hickory()).await {
-                Ok(resp) => {
-                    for record in resp.records() {
-                        let value = record.data().map(|d| d.to_string()).unwrap_or_default();
-                        if !value.is_empty() {
-                            out.push(DnsResult {
-                                host: host.to_string(),
-                                record_type: rtype,
-                                value,
-                            });
-                        }
-                    }
-                }
-                Err(e) => handle_lookup_error(host, rtype, &e, silent),
-            }
-        }
-
-        // Full AXFR implementation in Phase 5
-        RecordType::Axfr => {
-            match resolver.lookup(host, HickoryRecordType::AXFR).await {
                 Ok(resp) => {
                     for record in resp.records() {
                         let value = record.data().map(|d| d.to_string()).unwrap_or_default();
@@ -595,14 +559,14 @@ fn handle_lookup_error(
 }
 
 async fn resolve_host(
-    resolver: Arc<TokioAsyncResolver>,
+    resolver: &TokioAsyncResolver,
     host: String,
     query_types: Vec<RecordType>,
     silent: bool,
 ) -> Vec<DnsResult> {
     let mut results = Vec::new();
     for rtype in query_types {
-        lookup_type(&resolver, &host, rtype, silent, &mut results).await;
+        lookup_type(resolver, &host, rtype, silent, &mut results).await;
     }
     results
 }
@@ -730,7 +694,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 // ---------------------------------------------------------------------------
@@ -758,11 +722,10 @@ async fn collect_input(list: Option<&str>, silent: bool) -> Result<Vec<String>> 
                 }
                 Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                     // Warn if it looks like a filename that should have existed
-                    if arg.ends_with(".txt") || arg.ends_with(".lst") {
-                        if !silent {
+                    if (arg.ends_with(".txt") || arg.ends_with(".lst"))
+                        && !silent {
                             eprintln!("[WARN] File not found: {arg}, treating as hostname");
                         }
-                    }
                     // Treat as a single hostname
                     hosts.push(arg.trim().to_string());
                     return Ok(hosts);
@@ -896,14 +859,15 @@ async fn main() -> Result<()> {
         let handle = tokio::spawn(async move {
             while let Ok(host) = rx_c.recv().await {
                 let results = resolve_host(
-                    Arc::clone(&resolver_c),
+                    &resolver_c,
                     host.clone(),
                     (*qtypes_c).clone(),
                     silent,
                 )
                 .await;
-                // Always send even if empty — JSON output needs the host entry
-                let _ = out_tx_c.send(WorkerOutput { host, results }).await;
+                if !results.is_empty() {
+                    let _ = out_tx_c.send(WorkerOutput { host, results }).await;
+                }
             }
         });
         worker_handles.push(handle);
@@ -925,6 +889,7 @@ async fn main() -> Result<()> {
     let resp_only = cli.resp_only;
     let no_color = cli.no_color;
     let json_output = cli.json;
+    let _omit_raw = cli.omit_raw;
 
     // Deduplicate printed hosts when using default (hostname-only) output
     let mut printed_hosts: HashSet<String> = HashSet::new();
@@ -947,11 +912,10 @@ async fn main() -> Result<()> {
                 let line = format_result(result, resp, resp_only, no_color);
 
                 // In default mode, only print a hostname once (multiple A records → one line)
-                if !resp && !resp_only {
-                    if !printed_hosts.insert(result.host.clone()) {
+                if !resp && !resp_only
+                    && !printed_hosts.insert(result.host.clone()) {
                         continue;
                     }
-                }
 
                 println!("{line}");
                 if let Some(ref mut fh) = output_file {
