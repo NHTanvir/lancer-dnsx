@@ -1,7 +1,9 @@
 //! lancer-dnsx -- Phase 5: DNS trace and AXFR
 
+mod asn;
 mod axfr;
 mod brute;
+mod cdn;
 mod cli;
 mod filter;
 mod input;
@@ -19,11 +21,13 @@ use anyhow::Result;
 use clap::Parser;
 use tokio::io::AsyncWriteExt;
 
+use crate::asn::AsnLookup;
+use crate::cdn::CdnMatcher;
 use crate::cli::{normalize_args, Cli};
 use crate::filter::Filters;
 use crate::input::collect_input;
-use crate::output::{format_result, WorkerOutput};
-use crate::record::{HostRecord, RecordType};
+use crate::output::{append_annotations, format_result, WorkerOutput};
+use crate::record::{AsnAnnotation, CdnAnnotation, HostRecord, RecordType};
 use crate::resolver::{load_resolvers, resolve_host, ResolverPool};
 use crate::wildcard::WildcardCache;
 
@@ -467,6 +471,20 @@ async fn main() -> Result<()> {
     let auto_wildcard = cli.auto_wildcard;
     let wildcard_domain: Option<Arc<String>> = cli.wildcard_domain.clone().map(Arc::new);
 
+    // Phase 7: CDN/ASN matchers, shared across workers. Constructed only
+    // when the relevant flag is set so we don't pay for the static range
+    // table or HTTP client in the common case.
+    let cdn_matcher: Option<Arc<CdnMatcher>> = if cli.cdn {
+        Some(Arc::new(CdnMatcher::new()))
+    } else {
+        None
+    };
+    let asn_lookup: Option<Arc<AsnLookup>> = if cli.asn {
+        Some(Arc::new(AsnLookup::new(cli.silent)))
+    } else {
+        None
+    };
+
     let mut worker_handles = Vec::with_capacity(num_workers);
     for _ in 0..num_workers {
         let pool_c = Arc::clone(&pool);
@@ -476,6 +494,8 @@ async fn main() -> Result<()> {
         let wildcard_c = wildcard_cache.as_ref().map(Arc::clone);
         let wd_c = wildcard_domain.clone();
         let filters_c = Arc::clone(&filters);
+        let cdn_c = cdn_matcher.as_ref().map(Arc::clone);
+        let asn_c = asn_lookup.as_ref().map(Arc::clone);
 
         let handle = tokio::spawn(async move {
             while let Ok(host) = rx_c.recv().await {
@@ -534,6 +554,42 @@ async fn main() -> Result<()> {
                     }
                 };
 
+                // Phase 7: CDN/ASN annotations. Walk surviving A/AAAA
+                // results and attach matches by IP. ASN is async (HTTP
+                // call into BGPView with an in-memory cache) so unique
+                // IPs are deduplicated before issuing lookups.
+                let mut cdn_annotations: Vec<CdnAnnotation> = Vec::new();
+                let mut asn_annotations: Vec<AsnAnnotation> = Vec::new();
+                if cdn_c.is_some() || asn_c.is_some() {
+                    let mut seen_ips: HashSet<String> = HashSet::new();
+                    for r in &results {
+                        if !matches!(r.record_type, RecordType::A | RecordType::Aaaa) {
+                            continue;
+                        }
+                        if !seen_ips.insert(r.value.clone()) {
+                            continue;
+                        }
+                        let Ok(ip) = r.value.parse::<IpAddr>() else {
+                            continue;
+                        };
+                        if let Some(m) = &cdn_c {
+                            if let Some(info) = m.lookup(ip) {
+                                cdn_annotations.push(CdnAnnotation {
+                                    ip: r.value.clone(),
+                                    name: info.name.to_string(),
+                                    cdn_type: info.cdn_type.to_string(),
+                                });
+                            }
+                        }
+                        if let Some(a) = &asn_c {
+                            if let Some(info) = a.lookup(ip).await {
+                                asn_annotations
+                                    .push(AsnAnnotation::from_info(r.value.clone(), &info));
+                            }
+                        }
+                    }
+                }
+
                 // Forward when we have records OR when an rcode filter
                 // matched a record-less response (e.g. NXDOMAIN). The
                 // latter is the whole point of `-rcode nxdomain`.
@@ -543,6 +599,8 @@ async fn main() -> Result<()> {
                             host,
                             results,
                             matched_rcode,
+                            cdn: cdn_annotations,
+                            asn: asn_annotations,
                         })
                         .await;
                 }
@@ -575,7 +633,9 @@ async fn main() -> Result<()> {
     while let Some(wo) = out_rx.recv().await {
         if json_output {
             if !wo.results.is_empty() {
-                let rec = HostRecord::from_results(&wo.host, &wo.results);
+                let mut rec = HostRecord::from_results(&wo.host, &wo.results);
+                rec.cdn = wo.cdn.clone();
+                rec.asn = wo.asn.clone();
                 let line = serde_json::to_string(&rec)?;
                 println!("{line}");
                 write_line(&mut output_file, &line).await;
@@ -605,11 +665,19 @@ async fn main() -> Result<()> {
             }
         } else {
             for result in &wo.results {
-                let line = format_result(result, resp, resp_only, no_color);
+                let mut line = format_result(result, resp, resp_only, no_color);
 
                 // In default mode, only print a hostname once (multiple A records -> one line)
                 if !resp && !resp_only && !printed_hosts.insert(result.host.clone()) {
                     continue;
+                }
+
+                // Phase 7: append CDN/ASN annotations to the IP that
+                // produced them. Only meaningful for A/AAAA records.
+                if (!wo.cdn.is_empty() || !wo.asn.is_empty())
+                    && matches!(result.record_type, RecordType::A | RecordType::Aaaa)
+                {
+                    append_annotations(&mut line, &result.value, &wo.cdn, &wo.asn);
                 }
 
                 println!("{line}");

@@ -58,6 +58,8 @@ const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
     "stream",
     "trace",
     "trace-max-recursion",
+    "cdn",
+    "asn",
 ];
 
 /// Rewrite single-dash long flags to double-dash so clap can parse them.
@@ -247,6 +249,14 @@ pub(crate) struct Cli {
     /// Write output to file
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     pub(crate) output: Option<String>,
+
+    /// Display CDN name for IPs behind known CDNs
+    #[arg(long = "cdn")]
+    pub(crate) cdn: bool,
+
+    /// Display ASN information for resolved IPs (uses BGPView API)
+    #[arg(long = "asn")]
+    pub(crate) asn: bool,
 
     // ---- configurations ----
     #[clap(next_help_heading = "Configurations")]

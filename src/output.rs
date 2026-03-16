@@ -1,6 +1,6 @@
 //! Output formatting and the worker -> output channel payload type.
 
-use crate::record::{DnsResult, ResponseCode};
+use crate::record::{AsnAnnotation, CdnAnnotation, DnsResult, ResponseCode};
 
 /// Format a single DNS result for output.
 ///
@@ -22,6 +22,22 @@ pub(crate) fn format_result(
     }
 }
 
+/// Append CDN/ASN annotations to a result line. Looks up by IP value so the
+/// annotation only attaches to the matching A/AAAA line.
+pub(crate) fn append_annotations(
+    line: &mut String,
+    ip: &str,
+    cdns: &[CdnAnnotation],
+    asns: &[AsnAnnotation],
+) {
+    for c in cdns.iter().filter(|c| c.ip == ip) {
+        line.push_str(&format!(" [cdn:{}]", c.name));
+    }
+    for a in asns.iter().filter(|a| a.ip == ip) {
+        line.push_str(&format!(" [asn:{} {} {}]", a.asn, a.name, a.country));
+    }
+}
+
 /// The payload sent from workers to the output loop.
 ///
 /// `matched_rcode` is set when the host produced no records but matched an
@@ -31,4 +47,6 @@ pub(crate) struct WorkerOutput {
     pub(crate) host: String,
     pub(crate) results: Vec<DnsResult>,
     pub(crate) matched_rcode: Option<ResponseCode>,
+    pub(crate) cdn: Vec<CdnAnnotation>,
+    pub(crate) asn: Vec<AsnAnnotation>,
 }

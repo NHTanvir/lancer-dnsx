@@ -7,6 +7,8 @@ use hickory_resolver::proto::op::ResponseCode as HickoryResponseCode;
 use hickory_resolver::proto::rr::RecordType as HickoryRecordType;
 use serde::Serialize;
 
+use crate::asn::AsnInfo;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum RecordType {
     A,
@@ -182,7 +184,44 @@ pub(crate) struct HostRecord {
     pub(crate) any: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) response_code: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) cdn: Vec<CdnAnnotation>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub(crate) asn: Vec<AsnAnnotation>,
     pub(crate) timestamp: String,
+}
+
+/// Per-IP CDN annotation. Emitted when `-cdn` is set and a resolved A/AAAA
+/// matches a known CDN range.
+#[derive(Serialize, Debug, Clone)]
+pub(crate) struct CdnAnnotation {
+    pub ip: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub cdn_type: String,
+}
+
+/// Per-IP ASN annotation. Emitted when `-asn` is set and BGPView returned a
+/// matching prefix.
+#[derive(Serialize, Debug, Clone)]
+pub(crate) struct AsnAnnotation {
+    pub ip: String,
+    pub asn: u32,
+    pub name: String,
+    pub country: String,
+    pub prefix: String,
+}
+
+impl AsnAnnotation {
+    pub(crate) fn from_info(ip: String, info: &AsnInfo) -> Self {
+        Self {
+            ip,
+            asn: info.asn,
+            name: info.name.clone(),
+            country: info.country.clone(),
+            prefix: info.prefix.clone(),
+        }
+    }
 }
 
 impl HostRecord {
