@@ -7,7 +7,7 @@ use crate::record::{AsnAnnotation, CdnAnnotation, DnsResult, ResponseCode};
 /// - Default (no `-resp`, no `-resp-only`): print just the hostname
 /// - `-resp` / `-re`: print `host TYPE value`
 /// - `-resp-only` / `-ro`: print just `value`
-pub(crate) fn format_result(
+pub fn format_result(
     result: &DnsResult,
     resp: bool,
     resp_only: bool,
@@ -24,7 +24,7 @@ pub(crate) fn format_result(
 
 /// Append CDN/ASN annotations to a result line. Looks up by IP value so the
 /// annotation only attaches to the matching A/AAAA line.
-pub(crate) fn append_annotations(
+pub fn append_annotations(
     line: &mut String,
     ip: &str,
     cdns: &[CdnAnnotation],
@@ -43,10 +43,10 @@ pub(crate) fn append_annotations(
 /// `matched_rcode` is set when the host produced no records but matched an
 /// `-rcode` filter (e.g. NXDOMAIN for a non-existent name): we still surface
 /// the host so the user sees the result they explicitly asked for.
-pub(crate) struct WorkerOutput {
-    pub(crate) host: String,
-    pub(crate) results: Vec<DnsResult>,
-    pub(crate) matched_rcode: Option<ResponseCode>,
-    pub(crate) cdn: Vec<CdnAnnotation>,
-    pub(crate) asn: Vec<AsnAnnotation>,
+pub struct WorkerOutput {
+    pub host: String,
+    pub results: Vec<DnsResult>,
+    pub matched_rcode: Option<ResponseCode>,
+    pub cdn: Vec<CdnAnnotation>,
+    pub asn: Vec<AsnAnnotation>,
 }

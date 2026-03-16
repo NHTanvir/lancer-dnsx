@@ -65,7 +65,7 @@ async fn probe_resolver(addr: &str) -> Result<Duration, String> {
 
 /// Run the full healthcheck, printing each step to stdout. Returns whether
 /// all checks passed.
-pub(crate) async fn run(version: &str) -> Result<bool> {
+pub async fn run(version: &str) -> Result<bool> {
     println!("lancer-dnsx healthcheck v{version}\n");
     let mut all_ok = true;
 

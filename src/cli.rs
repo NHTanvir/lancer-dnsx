@@ -71,7 +71,7 @@ const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
 /// `-silent` -> `--silent`
 /// `-resp-only` -> `--resp-only`
 /// `-l foo` stays as `-l foo` (single char, handled natively)
-pub(crate) fn normalize_args(args: impl Iterator<Item = String>) -> Vec<String> {
+pub fn normalize_args(args: impl Iterator<Item = String>) -> Vec<String> {
     args.map(|arg| {
         // Only touch things that start with exactly one '-' followed by 2+ chars
         if arg.starts_with('-') && !arg.starts_with("--") && arg.len() >= 3 {
@@ -98,84 +98,84 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
     long_about = None,
     disable_version_flag = true,
 )]
-pub(crate) struct Cli {
+pub struct Cli {
     // ---- input ----
     #[clap(next_help_heading = "Input")]
     /// Input file containing list of hosts/IPs, or comma-separated hosts
     #[arg(short = 'l', long = "list", value_name = "FILE_OR_HOSTS")]
-    pub(crate) list: Option<String>,
+    pub list: Option<String>,
 
     /// Target domain(s) to brute-force (comma-separated)
     #[arg(short = 'd', long = "domain", value_name = "DOMAIN")]
-    pub(crate) domain: Option<String>,
+    pub domain: Option<String>,
 
     /// Wordlist file (one subdomain label per line)
     #[arg(short = 'w', long = "wordlist", value_name = "FILE")]
-    pub(crate) wordlist: Option<String>,
+    pub wordlist: Option<String>,
 
     // ---- query type ----
     #[clap(next_help_heading = "Query")]
     /// Query A records (default)
     #[arg(short = 'a')]
-    pub(crate) query_a: bool,
+    pub query_a: bool,
 
     /// Query AAAA records
     #[arg(long = "aaaa")]
-    pub(crate) query_aaaa: bool,
+    pub query_aaaa: bool,
 
     /// Query CNAME records
     #[arg(long = "cname")]
-    pub(crate) cname: bool,
+    pub cname: bool,
 
     /// Query MX records
     #[arg(long = "mx")]
-    pub(crate) mx: bool,
+    pub mx: bool,
 
     /// Query TXT records
     #[arg(long = "txt")]
-    pub(crate) txt: bool,
+    pub txt: bool,
 
     /// Query NS records
     #[arg(long = "ns")]
-    pub(crate) ns: bool,
+    pub ns: bool,
 
     /// Query PTR records
     #[arg(long = "ptr")]
-    pub(crate) ptr: bool,
+    pub ptr: bool,
 
     /// Query SRV records
     #[arg(long = "srv")]
-    pub(crate) srv: bool,
+    pub srv: bool,
 
     /// Query SOA records
     #[arg(long = "soa")]
-    pub(crate) soa: bool,
+    pub soa: bool,
 
     /// Query CAA records
     #[arg(long = "caa")]
-    pub(crate) caa: bool,
+    pub caa: bool,
 
     /// Query ANY records
     #[arg(long = "any")]
-    pub(crate) any: bool,
+    pub any: bool,
 
     /// Query AXFR (zone transfer stub -- full impl in Phase 5)
     #[arg(long = "axfr")]
-    pub(crate) axfr: bool,
+    pub axfr: bool,
 
     /// Query all record types (A, AAAA, CNAME, MX, TXT, NS, PTR, SRV, SOA, CAA)
     #[arg(long = "recon", visible_alias = "all")]
-    pub(crate) recon: bool,
+    pub recon: bool,
 
     /// Exclude specific record types (comma-separated, e.g. cname,a)
     #[arg(short = 'e', long = "exclude-type", value_name = "TYPES")]
-    pub(crate) exclude_type: Option<String>,
+    pub exclude_type: Option<String>,
 
     // ---- filter ----
     #[clap(next_help_heading = "Filter")]
     /// Number of concurrent workers
     #[arg(short = 't', long = "threads", default_value_t = 100)]
-    pub(crate) threads: usize,
+    pub threads: usize,
 
     /// Filter by DNS response code (comma-separated: noerror, nxdomain, servfail, refused, formerr, notimp)
     #[arg(
@@ -183,7 +183,7 @@ pub(crate) struct Cli {
         visible_aliases = ["rcode", "rc"],
         value_name = "CODES"
     )]
-    pub(crate) response_code: Option<String>,
+    pub response_code: Option<String>,
 
     /// Drop hosts that have any record of these types (comma-separated, e.g. cname,a)
     #[arg(
@@ -191,29 +191,29 @@ pub(crate) struct Cli {
         visible_alias = "rtf",
         value_name = "TYPES"
     )]
-    pub(crate) response_type_filter: Option<String>,
+    pub response_type_filter: Option<String>,
 
     /// Only include results whose resolved value matches this regex
     #[arg(long = "match-regex", visible_alias = "mr", value_name = "REGEX")]
-    pub(crate) match_regex: Option<String>,
+    pub match_regex: Option<String>,
 
     /// Exclude results whose resolved value matches this regex
     #[arg(long = "exclude-regex", visible_alias = "er", value_name = "REGEX")]
-    pub(crate) exclude_regex: Option<String>,
+    pub exclude_regex: Option<String>,
 
     /// Stream mode: disable wildcard detection, stats, and resume for low-latency / low-memory operation
     #[arg(long = "stream")]
-    pub(crate) stream: bool,
+    pub stream: bool,
 
     // ---- wildcard ----
     #[clap(next_help_heading = "Wildcard")]
     /// Manual wildcard probe target; IPs from <random>.<this> are treated as wildcards
     #[arg(long = "wildcard-domain", visible_alias = "wd", value_name = "DOMAIN")]
-    pub(crate) wildcard_domain: Option<String>,
+    pub wildcard_domain: Option<String>,
 
     /// Auto-detect wildcard zones by walking up from each host
     #[arg(long = "auto-wildcard")]
-    pub(crate) auto_wildcard: bool,
+    pub auto_wildcard: bool,
 
     /// Number of random probes per wildcard level (default 5)
     #[arg(
@@ -222,59 +222,59 @@ pub(crate) struct Cli {
         default_value_t = 5,
         value_name = "N"
     )]
-    pub(crate) wildcard_threshold: usize,
+    pub wildcard_threshold: usize,
 
     // ---- output ----
     #[clap(next_help_heading = "Output")]
     /// Show full response value alongside host (format: "host TYPE value")
     #[arg(long = "resp", visible_alias = "re")]
-    pub(crate) resp: bool,
+    pub resp: bool,
 
     /// Show only the response value (IP address)
     #[arg(long = "resp-only", visible_alias = "ro")]
-    pub(crate) resp_only: bool,
+    pub resp_only: bool,
 
     /// Output as JSONL (one JSON object per host)
     #[arg(short = 'j', long = "json")]
-    pub(crate) json: bool,
+    pub json: bool,
 
     /// Omit raw response field from JSON output
     #[arg(long = "omit-raw", visible_alias = "or")]
-    pub(crate) omit_raw: bool,
+    pub omit_raw: bool,
 
     /// Suppress banner and non-result output
     #[arg(long = "silent")]
-    pub(crate) silent: bool,
+    pub silent: bool,
 
     /// Disable ANSI color output
     #[arg(long = "no-color")]
-    pub(crate) no_color: bool,
+    pub no_color: bool,
 
     /// Write output to file
     #[arg(short = 'o', long = "output", value_name = "FILE")]
-    pub(crate) output: Option<String>,
+    pub output: Option<String>,
 
     /// Display CDN name for IPs behind known CDNs
     #[arg(long = "cdn")]
-    pub(crate) cdn: bool,
+    pub cdn: bool,
 
     /// Display ASN information for resolved IPs (uses BGPView API)
     #[arg(long = "asn")]
-    pub(crate) asn: bool,
+    pub asn: bool,
 
     // ---- configurations ----
     #[clap(next_help_heading = "Configurations")]
     /// Per-query timeout in seconds
     #[arg(long = "timeout", default_value_t = 3)]
-    pub(crate) timeout: u64,
+    pub timeout: u64,
 
     /// Number of retries on failure
     #[arg(long = "retry", default_value_t = 2)]
-    pub(crate) retry: usize,
+    pub retry: usize,
 
     /// Custom resolvers, comma-separated (e.g. 1.1.1.1,doh:https://cloudflare-dns.com/dns-query)
     #[arg(short = 'r', long = "resolver", value_name = "RESOLVERS")]
-    pub(crate) resolver: Option<String>,
+    pub resolver: Option<String>,
 
     /// File containing resolvers, one per line
     #[arg(
@@ -282,35 +282,35 @@ pub(crate) struct Cli {
         value_name = "FILE",
         visible_aliases = ["rL", "resolver-list"]
     )]
-    pub(crate) resolver_list: Option<String>,
+    pub resolver_list: Option<String>,
 
     // ---- probe ----
     #[clap(next_help_heading = "Probe")]
     /// DNS trace mode (recursive root-to-authoritative walk per host)
     #[arg(long = "trace")]
-    pub(crate) trace: bool,
+    pub trace: bool,
 
     /// Maximum recursion depth for -trace
     #[arg(long = "trace-max-recursion", default_value_t = 255)]
-    pub(crate) trace_max_recursion: u32,
+    pub trace_max_recursion: u32,
 
     // ---- optimization ----
     #[clap(next_help_heading = "Optimization")]
     /// Show a live progress bar with QPS, errors, and drop counters
     #[arg(long = "stats")]
-    pub(crate) stats: bool,
+    pub stats: bool,
 
     /// Resume from a previous run by skipping hosts listed in resume.cfg
     #[arg(long = "resume")]
-    pub(crate) resume: bool,
+    pub resume: bool,
 
     // ---- debug ----
     #[clap(next_help_heading = "Debug")]
     /// Print version and exit
     #[arg(short = 'v', long = "version")]
-    pub(crate) version: bool,
+    pub version: bool,
 
     /// Run resolver / hostsfile / disk healthcheck and exit
     #[arg(long = "hc", visible_alias = "health-check")]
-    pub(crate) hc: bool,
+    pub hc: bool,
 }

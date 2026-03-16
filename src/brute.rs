@@ -18,7 +18,7 @@ const EMBEDDED_TOP_100_WORDLIST: &str = include_str!("../wordlists/top-100.txt")
 /// Returns an error if any non-empty segment doesn't look like a domain
 /// (no dot, contains whitespace, etc.). Empty segments are skipped so
 /// trailing commas are forgiving.
-pub(crate) fn parse_domains(arg: &str) -> Result<Vec<String>> {
+pub fn parse_domains(arg: &str) -> Result<Vec<String>> {
     let mut out = Vec::new();
     for part in arg.split(',') {
         let trimmed = part.trim();
@@ -77,7 +77,7 @@ fn embedded_wordlist() -> Vec<String> {
 /// * `domain_arg`  -- value of `--domain` (comma-separated)
 /// * `wordlist`    -- value of `--wordlist`; `None` means use the embedded list
 /// * `silent`      -- suppress informational messages on stderr
-pub(crate) async fn generate_brute_input(
+pub async fn generate_brute_input(
     domain_arg: &str,
     wordlist: Option<&str>,
     silent: bool,

@@ -8,7 +8,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use indicatif::{ProgressBar, ProgressStyle};
 
-pub(crate) struct Stats {
+pub struct Stats {
     total: AtomicU64,
     resolved: AtomicU64,
     errors: AtomicU64,
@@ -16,9 +16,15 @@ pub(crate) struct Stats {
     bar: Option<ProgressBar>,
 }
 
+impl Default for Stats {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Stats {
     /// Construct a counter-only `Stats` instance with no progress bar.
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             total: AtomicU64::new(0),
             resolved: AtomicU64::new(0),
@@ -31,7 +37,7 @@ impl Stats {
     /// Construct a `Stats` with a configured `indicatif` progress bar.
     /// `total_hosts` is shown as the bar's `len`. Output goes to stderr
     /// (the indicatif default).
-    pub(crate) fn with_bar(total_hosts: u64) -> Self {
+    pub fn with_bar(total_hosts: u64) -> Self {
         let bar = ProgressBar::new(total_hosts);
         let style = ProgressStyle::with_template(
             "[{elapsed_precise}] {bar:40} {pos}/{len} ({per_sec}) | errors: {msg}",
@@ -49,13 +55,13 @@ impl Stats {
     }
 
     /// Mark one host as resolved.
-    pub(crate) fn inc_resolved(&self) {
+    pub fn inc_resolved(&self) {
         self.resolved.fetch_add(1, Ordering::Relaxed);
         self.tick();
     }
 
     /// Mark one host as errored.
-    pub(crate) fn inc_error(&self) {
+    pub fn inc_error(&self) {
         let n = self.errors.fetch_add(1, Ordering::Relaxed) + 1;
         if let Some(bar) = &self.bar {
             bar.set_message(n.to_string());
@@ -64,7 +70,7 @@ impl Stats {
     }
 
     /// Mark one host as dropped (filtered out, wildcard, etc.).
-    pub(crate) fn inc_dropped(&self) {
+    pub fn inc_dropped(&self) {
         self.dropped.fetch_add(1, Ordering::Relaxed);
         self.tick();
     }
@@ -78,7 +84,7 @@ impl Stats {
 
     /// Finalize the progress bar (if present) and print a one-line summary
     /// on stderr.
-    pub(crate) fn finish(&self) {
+    pub fn finish(&self) {
         if let Some(bar) = &self.bar {
             bar.finish_and_clear();
         }

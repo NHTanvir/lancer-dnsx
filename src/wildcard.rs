@@ -37,7 +37,7 @@ use crate::resolver::{is_transport_error, ResolverPool};
 const RANDOM_LABEL_LEN: usize = 12;
 
 /// Cache of wildcard IPs keyed by zone level.
-pub(crate) struct WildcardCache {
+pub struct WildcardCache {
     /// Map from level (e.g. `target.com`) to its observed wildcard IP set.
     /// An empty `ips` set is the cached negative result.
     levels: RwLock<HashMap<String, LevelInfo>>,
@@ -70,7 +70,7 @@ impl WildcardCache {
     ///
     /// `silent` suppresses both `[INFO]` (wildcard detected) and `[WARN]`
     /// (all probes failed) log lines emitted by the cache.
-    pub(crate) fn new(probes: usize, silent: bool) -> Self {
+    pub fn new(probes: usize, silent: bool) -> Self {
         // Clamp to a sensible minimum so users can't accidentally disable probing.
         let probes = probes.max(1);
         Self {
@@ -135,7 +135,7 @@ impl WildcardCache {
     /// uncached so a later worker may retry. An empty set is returned in that
     /// case so the current call doesn't block, but no negative-result entry
     /// is written.
-    pub(crate) async fn get_or_probe(
+    pub async fn get_or_probe(
         &self,
         pool: &ResolverPool,
         level: &str,
@@ -195,7 +195,7 @@ impl WildcardCache {
     ///   the target is checked.
     /// * `walk_up` -- if true, walk up from the immediate parent of `host`
     ///   to its apex, checking each level.
-    pub(crate) async fn is_wildcard_match(
+    pub async fn is_wildcard_match(
         &self,
         pool: &ResolverPool,
         host: &str,

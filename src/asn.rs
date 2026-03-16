@@ -18,14 +18,14 @@ use serde::Deserialize;
 use tokio::sync::RwLock;
 
 #[derive(Debug, Clone, serde::Serialize)]
-pub(crate) struct AsnInfo {
+pub struct AsnInfo {
     pub asn: u32,
     pub name: String,
     pub country: String,
     pub prefix: String,
 }
 
-pub(crate) struct AsnLookup {
+pub struct AsnLookup {
     cache: RwLock<HashMap<IpAddr, Option<AsnInfo>>>,
     client: Client,
     #[allow(dead_code)]

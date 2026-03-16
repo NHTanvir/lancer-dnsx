@@ -30,18 +30,18 @@ use crate::resolver::ResolverPool;
 const AXFR_TIMEOUT: Duration = Duration::from_secs(8);
 
 /// One line of AXFR output per host: which NS we tried and what happened.
-pub(crate) struct AxfrReport {
-    pub(crate) host: String,
-    pub(crate) per_ns: Vec<AxfrNsResult>,
+pub struct AxfrReport {
+    pub host: String,
+    pub per_ns: Vec<AxfrNsResult>,
 }
 
-pub(crate) struct AxfrNsResult {
-    pub(crate) ns_name: String,
-    pub(crate) ns_ip: Option<std::net::IpAddr>,
-    pub(crate) outcome: AxfrOutcome,
+pub struct AxfrNsResult {
+    pub ns_name: String,
+    pub ns_ip: Option<std::net::IpAddr>,
+    pub outcome: AxfrOutcome,
 }
 
-pub(crate) enum AxfrOutcome {
+pub enum AxfrOutcome {
     /// Transfer succeeded — list of stringified records.
     Records(Vec<String>),
     /// Transfer failed (refused, timeout, network error, malformed reply, …).
@@ -162,7 +162,7 @@ async fn try_axfr_one(zone: &str, ns_ip: std::net::IpAddr) -> Result<Vec<String>
 }
 
 /// Attempt AXFR against every NS for `host` and return the per-NS report.
-pub(crate) async fn axfr_host(host: &str, pool: &ResolverPool) -> Result<AxfrReport> {
+pub async fn axfr_host(host: &str, pool: &ResolverPool) -> Result<AxfrReport> {
     let ns_targets = resolve_ns_targets(pool, host).await;
     let mut per_ns = Vec::with_capacity(ns_targets.len());
     for (ns_name, ns_ip) in ns_targets {
@@ -186,7 +186,7 @@ pub(crate) async fn axfr_host(host: &str, pool: &ResolverPool) -> Result<AxfrRep
 }
 
 /// Pretty-print an `AxfrReport` to plain text.
-pub(crate) fn format_axfr_text(report: &AxfrReport) -> String {
+pub fn format_axfr_text(report: &AxfrReport) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     writeln!(out, "AXFR {}", report.host).unwrap();

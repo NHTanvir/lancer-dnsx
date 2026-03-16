@@ -21,7 +21,7 @@ use regex::Regex;
 use crate::cli::Cli;
 use crate::record::{DnsResult, HostResolution, RecordType, ResponseCode};
 
-pub(crate) struct Filters {
+pub struct Filters {
     rcode: Option<HashSet<ResponseCode>>,
     response_type_filter: Option<Vec<RecordType>>,
     match_regex: Option<Regex>,
@@ -31,7 +31,7 @@ pub(crate) struct Filters {
 impl Filters {
     /// Build the filter set from CLI flags. Returns an error if any filter
     /// argument cannot be parsed.
-    pub(crate) fn build(cli: &Cli) -> Result<Self> {
+    pub fn build(cli: &Cli) -> Result<Self> {
         let rcode = match &cli.response_code {
             Some(s) => Some(parse_rcode_list(s)?),
             None => None,
@@ -66,7 +66,7 @@ impl Filters {
 
     /// True if no filters are active (fast-path the worker loop can use to
     /// skip the apply step entirely).
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.rcode.is_none()
             && self.response_type_filter.is_none()
             && self.match_regex.is_none()
@@ -77,7 +77,7 @@ impl Filters {
     /// configured `-rcode` set, if any. Used by the output layer to surface
     /// hosts that matched a code filter but produced no records (e.g.
     /// NXDOMAIN), so `-rcode nxdomain` actually prints those hosts.
-    pub(crate) fn matched_rcode(&self, resolution: &HostResolution) -> Option<ResponseCode> {
+    pub fn matched_rcode(&self, resolution: &HostResolution) -> Option<ResponseCode> {
         let wanted = self.rcode.as_ref()?;
         resolution
             .codes
@@ -90,7 +90,7 @@ impl Filters {
     /// Apply all filters to a host's resolution. Returns the (possibly
     /// reduced) result list when the host passes, or `None` when the host
     /// is dropped.
-    pub(crate) fn apply(&self, resolution: HostResolution) -> Option<Vec<DnsResult>> {
+    pub fn apply(&self, resolution: HostResolution) -> Option<Vec<DnsResult>> {
         // 1. Host-level: response-code filter. A host passes when ANY of
         //    its queried record types returned a code in the configured
         //    set. Codes that are None (transport failure) never match.

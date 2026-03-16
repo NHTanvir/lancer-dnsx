@@ -11,13 +11,19 @@ use std::net::IpAddr;
 use ipnet::IpNet;
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct CdnInfo {
+pub struct CdnInfo {
     pub name: &'static str,     // "cloudflare", "cloudfront", etc.
     pub cdn_type: &'static str, // "cdn", "waf", "cloud-host"
 }
 
-pub(crate) struct CdnMatcher {
+pub struct CdnMatcher {
     ranges: Vec<(IpNet, CdnInfo)>,
+}
+
+impl Default for CdnMatcher {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CdnMatcher {

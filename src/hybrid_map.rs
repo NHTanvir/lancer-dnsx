@@ -27,7 +27,7 @@ use redb::{Database, TableDefinition};
 const TABLE: TableDefinition<&str, u8> = TableDefinition::new("dedup");
 
 /// Hybrid in-memory + on-disk dedup set.
-pub(crate) struct HybridMap {
+pub struct HybridMap {
     mem: DashSet<String>,
     spill_threshold: usize,
     spilled: AtomicBool,
@@ -39,7 +39,7 @@ impl HybridMap {
     /// Construct a new hybrid map. `db_path` is the path that will be used
     /// for the redb spill file if/when the threshold is exceeded. The file
     /// is not created until that point.
-    pub(crate) fn new(spill_threshold: usize, db_path: impl AsRef<Path>) -> Self {
+    pub fn new(spill_threshold: usize, db_path: impl AsRef<Path>) -> Self {
         Self {
             mem: DashSet::new(),
             spill_threshold,
@@ -51,7 +51,7 @@ impl HybridMap {
 
     /// Insert `host`. Returns `true` if newly inserted, `false` if it was
     /// already present (in memory or on disk).
-    pub(crate) fn insert(&self, host: &str) -> bool {
+    pub fn insert(&self, host: &str) -> bool {
         // Fast path: already known in memory.
         if self.mem.contains(host) {
             return false;
@@ -88,7 +88,7 @@ impl HybridMap {
 
     /// Check membership.
     #[allow(dead_code)]
-    pub(crate) fn contains(&self, host: &str) -> bool {
+    pub fn contains(&self, host: &str) -> bool {
         if self.mem.contains(host) {
             return true;
         }
@@ -100,13 +100,20 @@ impl HybridMap {
 
     /// Current in-memory entry count. Disk-only entries are not counted.
     #[allow(dead_code)]
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.mem.len()
+    }
+
+    /// True when no entries have been inserted in this run (in-memory only;
+    /// see `has_spilled` for the disk-spill status).
+    #[allow(dead_code)]
+    pub fn is_empty(&self) -> bool {
+        self.mem.is_empty()
     }
 
     /// True if the disk spill file has been initialized.
     #[allow(dead_code)]
-    pub(crate) fn has_spilled(&self) -> bool {
+    pub fn has_spilled(&self) -> bool {
         self.spilled.load(Ordering::Acquire)
     }
 

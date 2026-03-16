@@ -1,21 +1,4 @@
-//! lancer-dnsx -- Phase 5: DNS trace and AXFR
-
-mod asn;
-mod axfr;
-mod brute;
-mod cdn;
-mod cli;
-mod filter;
-mod healthcheck;
-mod hybrid_map;
-mod input;
-mod output;
-mod record;
-mod resolver;
-mod resume;
-mod stats;
-mod trace;
-mod wildcard;
+//! lancer-dnsx CLI entry point.
 
 use std::collections::HashSet;
 use std::net::IpAddr;
@@ -25,18 +8,19 @@ use anyhow::Result;
 use clap::Parser;
 use tokio::io::AsyncWriteExt;
 
-use crate::asn::AsnLookup;
-use crate::cdn::CdnMatcher;
-use crate::cli::{normalize_args, Cli};
-use crate::filter::Filters;
-use crate::hybrid_map::HybridMap;
-use crate::input::collect_input;
-use crate::output::{append_annotations, format_result, WorkerOutput};
-use crate::record::{AsnAnnotation, CdnAnnotation, HostRecord, RecordType};
-use crate::resolver::{load_resolvers, resolve_host, ResolverPool};
-use crate::resume::{ResumeState, DEFAULT_FILENAME as RESUME_FILENAME};
-use crate::stats::Stats;
-use crate::wildcard::WildcardCache;
+use lancer_dnsx::asn::AsnLookup;
+use lancer_dnsx::cdn::CdnMatcher;
+use lancer_dnsx::cli::{normalize_args, Cli};
+use lancer_dnsx::filter::Filters;
+use lancer_dnsx::hybrid_map::HybridMap;
+use lancer_dnsx::input::collect_input;
+use lancer_dnsx::output::{append_annotations, format_result, WorkerOutput};
+use lancer_dnsx::record::{AsnAnnotation, CdnAnnotation, HostRecord, RecordType};
+use lancer_dnsx::resolver::{load_resolvers, resolve_host, ResolverPool};
+use lancer_dnsx::resume::{ResumeState, DEFAULT_FILENAME as RESUME_FILENAME};
+use lancer_dnsx::stats::Stats;
+use lancer_dnsx::wildcard::WildcardCache;
+use lancer_dnsx::{axfr, brute, healthcheck, trace};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -304,8 +288,18 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Phase 9: -stream disables stats and resume too (the wildcard side is
+    // handled above). Stream mode is explicitly the "low-latency, low-memory,
+    // no-bookkeeping" mode -- we honor the user's intent here even if they
+    // also passed -stats or -resume.
+    if cli.stream && (cli.stats || cli.resume) && !cli.silent {
+        eprintln!("[INFO] -stream is set; stats/resume disabled");
+    }
+    let stats_enabled = cli.stats && !cli.stream;
+    let resume_enabled = cli.resume && !cli.stream;
+
     // Phase 8: -resume -- load resume.cfg and skip hosts already done.
-    let resume_state: Option<Arc<ResumeState>> = if cli.resume {
+    let resume_state: Option<Arc<ResumeState>> = if resume_enabled {
         let state = ResumeState::load(RESUME_FILENAME)?;
         if !cli.silent && state.done_count() > 0 {
             eprintln!(
@@ -333,7 +327,7 @@ async fn main() -> Result<()> {
     // attached when both -stats and !-silent (silent mode owns the TTY).
     // Without -stats we still construct a Stats so worker plumbing stays
     // uniform, but no bar is attached.
-    let stats: Arc<Stats> = if cli.stats && !cli.silent {
+    let stats: Arc<Stats> = if stats_enabled && !cli.silent {
         Arc::new(Stats::with_bar(hosts.len() as u64))
     } else {
         Arc::new(Stats::new())
@@ -726,7 +720,10 @@ async fn main() -> Result<()> {
     let resp_only = cli.resp_only;
     let no_color = cli.no_color;
     let json_output = cli.json;
-    let _omit_raw = cli.omit_raw; // TODO: wire through HostRecord serialization when "raw" field is added
+    // Note: -omit-raw is a no-op until HostRecord grows a "raw" response field.
+    // The flag is accepted for compatibility with dnsx but currently has no
+    // effect because the JSON record schema does not include a raw field.
+    let _omit_raw = cli.omit_raw;
 
     // Deduplicate printed hosts when using default (hostname-only) output
     let mut printed_hosts: HashSet<String> = HashSet::new();
@@ -799,7 +796,7 @@ async fn main() -> Result<()> {
             eprintln!("[WARN] resume: final save failed: {e}");
         }
     }
-    if cli.stats {
+    if stats_enabled {
         stats.finish();
     }
 

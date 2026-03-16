@@ -7,6 +7,14 @@ authors = ["NHTanvir <naymulhasantanvir10@gmail.com>"]
 license = "MIT"
 repository = "https://github.com/NHTanvir/lancer-dnsx"
 
+[lib]
+name = "lancer_dnsx"
+path = "src/lib.rs"
+
+[[bin]]
+name = "lancer-dnsx"
+path = "src/main.rs"
+
 [dependencies]
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }

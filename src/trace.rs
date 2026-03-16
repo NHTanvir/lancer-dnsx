@@ -18,7 +18,7 @@ use tokio::time::timeout;
 
 /// Hard-coded IANA root server addresses. We try them in order until one
 /// responds.
-pub(crate) const ROOT_SERVERS: &[(&str, &str)] = &[
+pub const ROOT_SERVERS: &[(&str, &str)] = &[
     ("a.root-servers.net", "198.41.0.4"),
     ("b.root-servers.net", "199.9.14.201"),
     ("c.root-servers.net", "192.33.4.12"),
@@ -35,18 +35,18 @@ pub(crate) const ROOT_SERVERS: &[(&str, &str)] = &[
 ];
 
 /// One step of the trace walk.
-pub(crate) struct TraceStep {
-    pub(crate) step: usize,
-    pub(crate) server: String,
-    pub(crate) server_ip: IpAddr,
+pub struct TraceStep {
+    pub step: usize,
+    pub server: String,
+    pub server_ip: IpAddr,
     /// The queried hostname for this hop. Kept on every step so a future
     /// JSON-output mode (or debugger) can show "what we asked at hop N".
     #[allow(dead_code)]
-    pub(crate) question: String,
-    pub(crate) response_kind: TraceResponseKind,
+    pub question: String,
+    pub response_kind: TraceResponseKind,
 }
 
-pub(crate) enum TraceResponseKind {
+pub enum TraceResponseKind {
     /// Authority section returned NS records: list of NS names.
     Delegation(Vec<String>),
     /// Authoritative answer records (typed string forms).
@@ -204,7 +204,7 @@ fn record_to_string(r: &Record) -> String {
 /// answer. Bounded by `max_recursion` hops. Best-effort: if a root times out
 /// we try the next one; if delegation chain breaks we record an `Error` step
 /// and stop.
-pub(crate) async fn trace_host(host: &str, max_recursion: u32) -> Result<Vec<TraceStep>> {
+pub async fn trace_host(host: &str, max_recursion: u32) -> Result<Vec<TraceStep>> {
     let qname = Name::from_str(host)
         .map_err(|e| anyhow!("invalid host {host}: {e}"))?;
 
@@ -380,7 +380,7 @@ pub(crate) async fn trace_host(host: &str, max_recursion: u32) -> Result<Vec<Tra
 }
 
 /// Pretty-print a trace result as plain text.
-pub(crate) fn format_trace_text(host: &str, steps: &[TraceStep]) -> String {
+pub fn format_trace_text(host: &str, steps: &[TraceStep]) -> String {
     use std::fmt::Write;
     let mut out = String::new();
     writeln!(out, "TRACE {host}").unwrap();

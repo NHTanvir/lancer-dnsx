@@ -3,7 +3,7 @@
 use anyhow::Result;
 use tokio::io::{AsyncBufReadExt, BufReader};
 
-pub(crate) async fn collect_input(list: Option<&str>, silent: bool) -> Result<Vec<String>> {
+pub async fn collect_input(list: Option<&str>, silent: bool) -> Result<Vec<String>> {
     let mut hosts: Vec<String> = Vec::new();
 
     if let Some(arg) = list {

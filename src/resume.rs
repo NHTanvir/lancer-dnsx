@@ -15,14 +15,14 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
 const SAVE_EVERY: u64 = 100;
-pub(crate) const DEFAULT_FILENAME: &str = "resume.cfg";
+pub const DEFAULT_FILENAME: &str = "resume.cfg";
 
 #[derive(Serialize, Deserialize, Default)]
 struct ResumeFile {
     completed: Vec<String>,
 }
 
-pub(crate) struct ResumeState {
+pub struct ResumeState {
     path: PathBuf,
     completed: Mutex<HashSet<String>>,
     marks_since_save: AtomicU64,
@@ -31,7 +31,7 @@ pub(crate) struct ResumeState {
 impl ResumeState {
     /// Load a `ResumeState` from `path`. Missing files are not an error —
     /// they produce an empty state. Malformed files surface as an error.
-    pub(crate) fn load(path: impl AsRef<Path>) -> Result<Self> {
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
         let path = path.as_ref().to_path_buf();
         let completed: HashSet<String> = if path.exists() {
             let data = std::fs::read_to_string(&path)
@@ -50,20 +50,20 @@ impl ResumeState {
     }
 
     /// Returns true if `host` is in the completed set (i.e. should be skipped).
-    pub(crate) fn is_done(&self, host: &str) -> bool {
+    pub fn is_done(&self, host: &str) -> bool {
         let guard = self.completed.lock().expect("resume mutex");
         guard.contains(host)
     }
 
     /// Number of already-completed hosts (informational).
-    pub(crate) fn done_count(&self) -> usize {
+    pub fn done_count(&self) -> usize {
         self.completed.lock().expect("resume mutex").len()
     }
 
     /// Mark a host as done. Every `SAVE_EVERY` calls the state is flushed.
     /// Flush errors are logged but not surfaced (we don't want resume
     /// bookkeeping to abort a real run).
-    pub(crate) fn mark_done(&self, host: &str) {
+    pub fn mark_done(&self, host: &str) {
         {
             let mut guard = self.completed.lock().expect("resume mutex");
             guard.insert(host.to_string());
@@ -77,7 +77,7 @@ impl ResumeState {
     }
 
     /// Write `resume.cfg` atomically.
-    pub(crate) fn save(&self) -> Result<()> {
+    pub fn save(&self) -> Result<()> {
         let snapshot: Vec<String> = {
             let guard = self.completed.lock().expect("resume mutex");
             guard.iter().cloned().collect()

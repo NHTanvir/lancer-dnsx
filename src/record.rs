@@ -10,7 +10,7 @@ use serde::Serialize;
 use crate::asn::AsnInfo;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum RecordType {
+pub enum RecordType {
     A,
     Aaaa,
     Cname,
@@ -26,7 +26,7 @@ pub(crate) enum RecordType {
 }
 
 impl RecordType {
-    pub(crate) fn to_hickory(self) -> HickoryRecordType {
+    pub fn to_hickory(self) -> HickoryRecordType {
         match self {
             RecordType::A => HickoryRecordType::A,
             RecordType::Aaaa => HickoryRecordType::AAAA,
@@ -44,7 +44,7 @@ impl RecordType {
     }
 
     /// Parse a type name (case-insensitive) from a string.
-    pub(crate) fn from_str_ci(s: &str) -> Option<Self> {
+    pub fn from_str_ci(s: &str) -> Option<Self> {
         match s.to_lowercase().as_str() {
             "a" => Some(RecordType::A),
             "aaaa" => Some(RecordType::Aaaa),
@@ -83,10 +83,10 @@ impl fmt::Display for RecordType {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) struct DnsResult {
-    pub(crate) host: String,
-    pub(crate) record_type: RecordType,
-    pub(crate) value: String,
+pub struct DnsResult {
+    pub host: String,
+    pub record_type: RecordType,
+    pub value: String,
 }
 
 /// Local mirror of the DNS response codes we filter on. Mapped from
@@ -95,7 +95,7 @@ pub(crate) struct DnsResult {
 /// works coherently — a user can only request the codes listed here, and
 /// any unknown code never matches.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub(crate) enum ResponseCode {
+pub enum ResponseCode {
     NoError,
     NxDomain,
     ServFail,
@@ -107,7 +107,7 @@ pub(crate) enum ResponseCode {
 
 impl ResponseCode {
     /// Parse a code name (case-insensitive). Returns None for unknown names.
-    pub(crate) fn from_str_ci(s: &str) -> Option<Self> {
+    pub fn from_str_ci(s: &str) -> Option<Self> {
         match s.trim().to_lowercase().as_str() {
             "noerror" | "no-error" => Some(ResponseCode::NoError),
             "nxdomain" | "nx-domain" => Some(ResponseCode::NxDomain),
@@ -120,7 +120,7 @@ impl ResponseCode {
     }
 
     /// Map a hickory `ResponseCode` into our local enum.
-    pub(crate) fn from_hickory(rc: HickoryResponseCode) -> Self {
+    pub fn from_hickory(rc: HickoryResponseCode) -> Self {
         match rc {
             HickoryResponseCode::NoError => ResponseCode::NoError,
             HickoryResponseCode::NXDomain => ResponseCode::NxDomain,
@@ -152,49 +152,49 @@ impl fmt::Display for ResponseCode {
 /// observed (or `None` if the query failed with a transport error rather
 /// than a structured DNS response).
 #[derive(Debug, Clone, Default)]
-pub(crate) struct HostResolution {
-    pub(crate) results: Vec<DnsResult>,
-    pub(crate) codes: HashMap<RecordType, Option<ResponseCode>>,
+pub struct HostResolution {
+    pub results: Vec<DnsResult>,
+    pub codes: HashMap<RecordType, Option<ResponseCode>>,
 }
 
 #[derive(Serialize, Default)]
-pub(crate) struct HostRecord {
-    pub(crate) host: String,
+pub struct HostRecord {
+    pub host: String,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) a: Vec<String>,
+    pub a: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) aaaa: Vec<String>,
+    pub aaaa: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) cname: Vec<String>,
+    pub cname: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) mx: Vec<String>,
+    pub mx: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) ns: Vec<String>,
+    pub ns: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) txt: Vec<String>,
+    pub txt: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) ptr: Vec<String>,
+    pub ptr: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) srv: Vec<String>,
+    pub srv: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) soa: Vec<String>,
+    pub soa: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) caa: Vec<String>,
+    pub caa: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) any: Vec<String>,
+    pub any: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub(crate) response_code: Option<String>,
+    pub response_code: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) cdn: Vec<CdnAnnotation>,
+    pub cdn: Vec<CdnAnnotation>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub(crate) asn: Vec<AsnAnnotation>,
-    pub(crate) timestamp: String,
+    pub asn: Vec<AsnAnnotation>,
+    pub timestamp: String,
 }
 
 /// Per-IP CDN annotation. Emitted when `-cdn` is set and a resolved A/AAAA
 /// matches a known CDN range.
 #[derive(Serialize, Debug, Clone)]
-pub(crate) struct CdnAnnotation {
+pub struct CdnAnnotation {
     pub ip: String,
     pub name: String,
     #[serde(rename = "type")]
@@ -204,7 +204,7 @@ pub(crate) struct CdnAnnotation {
 /// Per-IP ASN annotation. Emitted when `-asn` is set and BGPView returned a
 /// matching prefix.
 #[derive(Serialize, Debug, Clone)]
-pub(crate) struct AsnAnnotation {
+pub struct AsnAnnotation {
     pub ip: String,
     pub asn: u32,
     pub name: String,
@@ -213,7 +213,7 @@ pub(crate) struct AsnAnnotation {
 }
 
 impl AsnAnnotation {
-    pub(crate) fn from_info(ip: String, info: &AsnInfo) -> Self {
+    pub fn from_info(ip: String, info: &AsnInfo) -> Self {
         Self {
             ip,
             asn: info.asn,
@@ -225,7 +225,7 @@ impl AsnAnnotation {
 }
 
 impl HostRecord {
-    pub(crate) fn from_results(host: &str, results: &[DnsResult]) -> Self {
+    pub fn from_results(host: &str, results: &[DnsResult]) -> Self {
         let mut rec = HostRecord {
             host: host.to_string(),
             timestamp: chrono_now(),
@@ -252,7 +252,7 @@ impl HostRecord {
 
     /// Create a minimal record for a host that matched an rcode filter but
     /// returned no DNS records (e.g. NXDOMAIN under `-rcode nxdomain`).
-    pub(crate) fn empty_with_rcode(host: &str, code: ResponseCode) -> Self {
+    pub fn empty_with_rcode(host: &str, code: ResponseCode) -> Self {
         HostRecord {
             host: host.to_string(),
             response_code: Some(code.to_string().to_lowercase()),

@@ -21,7 +21,7 @@ use crate::record::{DnsResult, HostResolution, RecordType, ResponseCode};
 // ---------------------------------------------------------------------------
 
 /// Build the default 8-resolver pool (Cloudflare, Google, Quad9, OpenDNS).
-pub(crate) fn default_name_servers() -> Vec<NameServerConfig> {
+pub fn default_name_servers() -> Vec<NameServerConfig> {
     let addrs: &[&str] = &[
         "1.1.1.1:53",
         "1.0.0.1:53",
@@ -88,7 +88,7 @@ fn build_single_resolver(
 ///   - `tls:1.1.1.1` or `tls:1.1.1.1:853`         -> DoT, port 853
 ///   - `doh:https://example.com/dns-query`         -> DoH (Protocol::Https), port 443
 ///   - `quic:1.1.1.1`                              -> DoQ (unsupported; returns an error)
-pub(crate) fn parse_resolver_string(s: &str) -> Result<NameServerConfig> {
+pub fn parse_resolver_string(s: &str) -> Result<NameServerConfig> {
     let s = s.trim();
 
     // DoH: prefix doh: followed by a URL
@@ -211,7 +211,7 @@ pub(crate) fn parse_ip_port(s: &str, default_port: u16) -> Result<(IpAddr, u16)>
 }
 
 /// Load the resolver list from CLI flags, or return the built-in defaults.
-pub(crate) async fn load_resolvers(cli: &Cli) -> Result<Vec<NameServerConfig>> {
+pub async fn load_resolvers(cli: &Cli) -> Result<Vec<NameServerConfig>> {
     if cli.resolver.is_none() && cli.resolver_list.is_none() {
         return Ok(default_name_servers());
     }
@@ -311,7 +311,7 @@ impl RingBuffer {
 }
 
 /// One resolver in the pool, with its own health window and eviction flag.
-pub(crate) struct TrackedResolver {
+pub struct TrackedResolver {
     name: String,
     resolver: TokioAsyncResolver,
     stats: Mutex<RingBuffer>,
@@ -335,7 +335,7 @@ impl TrackedResolver {
     /// Borrow the underlying `TokioAsyncResolver`. Exposed so that adjacent
     /// modules (e.g. wildcard probing) can run lookups directly while still
     /// going through the pool's round-robin selection.
-    pub(crate) fn resolver(&self) -> &TokioAsyncResolver {
+    pub fn resolver(&self) -> &TokioAsyncResolver {
         &self.resolver
     }
 
@@ -371,7 +371,7 @@ impl TrackedResolver {
 }
 
 /// Pool of resolvers with round-robin selection and per-resolver health tracking.
-pub(crate) struct ResolverPool {
+pub struct ResolverPool {
     resolvers: Vec<TrackedResolver>,
     next_idx: AtomicUsize,
     silent: bool,
@@ -387,18 +387,17 @@ impl ResolverPool {
     }
 
     /// Number of resolvers in the pool (evicted or not).
-    pub(crate) fn len(&self) -> usize {
+    pub fn len(&self) -> usize {
         self.resolvers.len()
     }
 
     /// True if the pool was constructed empty (shouldn't happen via `build`).
-    #[allow(dead_code)]
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.resolvers.is_empty()
     }
 
     /// Build a pool of one tracked resolver per name-server config.
-    pub(crate) fn build(
+    pub fn build(
         servers: &[NameServerConfig],
         timeout_secs: u64,
         retries: usize,
@@ -418,7 +417,7 @@ impl ResolverPool {
     /// Round-robin pick of the next non-evicted resolver.
     /// Returns `(index, resolver)` so the caller can later report the outcome
     /// back to the right slot.
-    pub(crate) fn pick(&self) -> Option<(usize, &TrackedResolver)> {
+    pub fn pick(&self) -> Option<(usize, &TrackedResolver)> {
         let n = self.resolvers.len();
         if n == 0 {
             return None;
@@ -435,14 +434,14 @@ impl ResolverPool {
     }
 
     /// Record an outcome against the resolver at `idx`.
-    pub(crate) fn record(&self, idx: usize, success: bool) {
+    pub fn record(&self, idx: usize, success: bool) {
         if let Some(r) = self.resolvers.get(idx) {
             r.record_outcome(success, self.silent);
         }
     }
 
     /// Are all resolvers in the pool evicted?
-    pub(crate) fn all_evicted(&self) -> bool {
+    pub fn all_evicted(&self) -> bool {
         self.resolvers.iter().all(|r| r.is_evicted())
     }
 }
@@ -646,7 +645,7 @@ fn handle_lookup_error(host: &str, rtype: RecordType, e: &ResolveError, silent: 
     }
 }
 
-pub(crate) async fn resolve_host(
+pub async fn resolve_host(
     pool: &ResolverPool,
     host: String,
     query_types: Vec<RecordType>,
