@@ -249,15 +249,18 @@ fn default_name_servers() -> Vec<NameServerConfig> {
 }
 
 /// Format a `NameServerConfig` as a human-readable resolver URL.
+///
+/// For encrypted protocols with a TLS hostname the format is:
+///   `scheme://hostname (addr:port)`
+/// For plain protocols (or encrypted without a known hostname):
+///   `scheme://addr:port`
 fn describe_resolver(ns: &NameServerConfig) -> String {
     // hickory's Protocol implements Display ("udp"/"tcp"/"tls"/"https"/...)
     let scheme = ns.protocol.to_string();
-    if ns.protocol.is_encrypted() {
-        if let Some(ref host) = ns.tls_dns_name {
-            return format!("{}://{}@{}", scheme, host, ns.socket_addr);
-        }
+    match &ns.tls_dns_name {
+        Some(host) => format!("{}://{} ({})", scheme, host, ns.socket_addr),
+        None => format!("{}://{}", scheme, ns.socket_addr),
     }
-    format!("{}://{}", scheme, ns.socket_addr)
 }
 
 /// Build a single `TokioAsyncResolver` configured with a single `NameServerConfig`.
@@ -291,7 +294,7 @@ fn build_single_resolver(
 ///   - `tcp:1.1.1.1` or `tcp:1.1.1.1:53`          -> TCP, port 53
 ///   - `tls:1.1.1.1` or `tls:1.1.1.1:853`         -> DoT, port 853
 ///   - `doh:https://example.com/dns-query`         -> DoH (Protocol::Https), port 443
-///   - `quic:1.1.1.1`                              -> DoQ (unsupported; falls back to UDP)
+///   - `quic:1.1.1.1`                              -> DoQ (unsupported; returns an error)
 fn parse_resolver_string(s: &str) -> Result<NameServerConfig> {
     let s = s.trim();
 
@@ -396,6 +399,12 @@ fn well_known_tls_hostname(ip: &IpAddr) -> Option<String> {
 }
 
 /// Parse `addr` as a bare IP or `IP:port`, returning `(IpAddr, port)`.
+///
+/// The two branches here are sufficient:
+///   1. `IpAddr::parse` handles bare IPv4 and IPv6 addresses.
+///   2. `SocketAddr::parse` handles `IPv4:port` and `[IPv6]:port`.
+///
+/// Any other form (e.g. hostnames) is an error.
 fn parse_ip_port(s: &str, default_port: u16) -> Result<(IpAddr, u16)> {
     // Bare IPv4 or IPv6
     if let Ok(ip) = s.parse::<IpAddr>() {
@@ -404,14 +413,6 @@ fn parse_ip_port(s: &str, default_port: u16) -> Result<(IpAddr, u16)> {
     // Full SocketAddr (handles [IPv6]:port and IPv4:port)
     if let Ok(sa) = s.parse::<SocketAddr>() {
         return Ok((sa.ip(), sa.port()));
-    }
-    // IPv4 with port: "1.1.1.1:53"
-    if let Some(colon) = s.rfind(':') {
-        let ip_part = &s[..colon];
-        let port_part = &s[colon + 1..];
-        if let (Ok(ip), Ok(port)) = (ip_part.parse::<IpAddr>(), port_part.parse::<u16>()) {
-            return Ok((ip, port));
-        }
     }
     Err(anyhow!("Cannot parse resolver address: '{s}'"))
 }
@@ -542,33 +543,35 @@ impl TrackedResolver {
     /// sliding window (with at least `HEALTH_MIN_SAMPLES` samples) exceeds
     /// `HEALTH_EVICT_RATE`. Emits a one-time warning on eviction unless silent.
     fn record_outcome(&self, success: bool, silent: bool) {
-        let mut buf = match self.stats.lock() {
-            Ok(g) => g,
-            Err(p) => p.into_inner(), // recover from a poisoned mutex
-        };
-        buf.push(success);
-        if buf.len() >= HEALTH_MIN_SAMPLES {
-            let rate = buf.error_rate();
-            if rate > HEALTH_EVICT_RATE
-                && self
-                    .evicted
-                    .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
-                    .is_ok()
-                && !silent
-            {
-                eprintln!(
-                    "[WARN] Evicted resolver {} (error rate: {:.0}% over last {} queries)",
-                    self.name,
-                    rate * 100.0,
-                    buf.len()
-                );
+        let (should_evict, rate, len) = {
+            let mut buf = self.stats.lock().unwrap_or_else(|p| p.into_inner());
+            buf.push(success);
+            if buf.len() >= HEALTH_MIN_SAMPLES {
+                let rate = buf.error_rate();
+                let len = buf.len();
+                let evict = rate > HEALTH_EVICT_RATE
+                    && self
+                        .evicted
+                        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                        .is_ok();
+                (evict, rate, len)
+            } else {
+                (false, 0.0, 0)
             }
+        }; // MutexGuard dropped here
+        if should_evict && !silent {
+            eprintln!(
+                "[WARN] Evicted resolver {} (error rate: {:.0}%, {} samples)",
+                self.name,
+                rate * 100.0,
+                len
+            );
         }
     }
 }
 
 /// Pool of resolvers with round-robin selection and per-resolver health tracking.
-pub struct ResolverPool {
+struct ResolverPool {
     resolvers: Vec<TrackedResolver>,
     next_idx: AtomicUsize,
     silent: bool,
@@ -584,17 +587,18 @@ impl ResolverPool {
     }
 
     /// Number of resolvers in the pool (evicted or not).
-    pub fn len(&self) -> usize {
+    fn len(&self) -> usize {
         self.resolvers.len()
     }
 
     /// True if the pool was constructed empty (shouldn't happen via `build`).
-    pub fn is_empty(&self) -> bool {
+    #[allow(dead_code)]
+    fn is_empty(&self) -> bool {
         self.resolvers.is_empty()
     }
 
     /// Build a pool of one tracked resolver per name-server config.
-    pub fn build(
+    fn build(
         servers: &[NameServerConfig],
         timeout_secs: u64,
         retries: usize,
@@ -970,10 +974,14 @@ async fn lookup_type(
 }
 
 /// Returns true if this error is a transport / network failure (timeout,
-/// connection refused, TLS handshake, etc.) -- one that should count as a
-/// resolver health hit. NXDOMAIN and "no records" do NOT count.
+/// connection refused, no connections available, etc.) -- one that should
+/// count as a resolver health hit. NXDOMAIN, "no records", malformed
+/// responses (Proto), and internal message errors do NOT count.
 fn is_transport_error(e: &ResolveError) -> bool {
-    !matches!(e.kind(), ResolveErrorKind::NoRecordsFound { .. })
+    matches!(
+        e.kind(),
+        ResolveErrorKind::Io(_) | ResolveErrorKind::Timeout | ResolveErrorKind::NoConnections
+    )
 }
 
 /// Emit a warning line for a non-NXDOMAIN lookup error.
@@ -1323,7 +1331,7 @@ async fn main() -> Result<()> {
     let resp_only = cli.resp_only;
     let no_color = cli.no_color;
     let json_output = cli.json;
-    let _omit_raw = cli.omit_raw;
+    let _omit_raw = cli.omit_raw; // TODO: wire through HostRecord serialization when "raw" field is added
 
     // Deduplicate printed hosts when using default (hostname-only) output
     let mut printed_hosts: HashSet<String> = HashSet::new();
