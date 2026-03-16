@@ -118,7 +118,8 @@ impl CdnMatcher {
     pub fn lookup(&self, ip: IpAddr) -> Option<CdnInfo> {
         self.ranges
             .iter()
-            .find(|(net, _)| net.contains(&ip))
+            .filter(|(net, _)| net.contains(&ip))
+            .max_by_key(|(net, _)| net.prefix_len())
             .map(|(_, info)| *info)
     }
 }
@@ -141,5 +142,16 @@ mod tests {
         let m = CdnMatcher::new();
         let ip: IpAddr = "8.8.8.8".parse().unwrap();
         assert!(m.lookup(ip).is_none());
+    }
+
+    #[test]
+    fn longest_prefix_match() {
+        // Test that longest-prefix-match (most specific CIDR) is returned.
+        // Fastly has 151.101.0.0/16, which is more specific than any broader range.
+        // Verify that an IP in the Fastly /16 matches Fastly.
+        let m = CdnMatcher::new();
+        let ip: IpAddr = "151.101.1.1".parse().unwrap();
+        let info = m.lookup(ip).expect("fastly range");
+        assert_eq!(info.name, "fastly");
     }
 }
