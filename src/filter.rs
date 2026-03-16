@@ -13,6 +13,8 @@
 //!    AFTER the host-level filters; an empty result set after this step
 //!    drops the host entirely.
 
+use std::collections::HashSet;
+
 use anyhow::{anyhow, Result};
 use regex::Regex;
 
@@ -20,10 +22,10 @@ use crate::cli::Cli;
 use crate::record::{DnsResult, HostResolution, RecordType, ResponseCode};
 
 pub(crate) struct Filters {
-    pub(crate) rcode: Option<Vec<ResponseCode>>,
-    pub(crate) response_type_filter: Option<Vec<RecordType>>,
-    pub(crate) match_regex: Option<Regex>,
-    pub(crate) exclude_regex: Option<Regex>,
+    rcode: Option<HashSet<ResponseCode>>,
+    response_type_filter: Option<Vec<RecordType>>,
+    match_regex: Option<Regex>,
+    exclude_regex: Option<Regex>,
 }
 
 impl Filters {
@@ -138,8 +140,8 @@ impl Filters {
 
 /// Parse a comma-separated list of response-code names. Unknown names are
 /// rejected loudly so a typo doesn't silently behave as "no filter".
-fn parse_rcode_list(s: &str) -> Result<Vec<ResponseCode>> {
-    let mut out = Vec::new();
+fn parse_rcode_list(s: &str) -> Result<HashSet<ResponseCode>> {
+    let mut out = HashSet::new();
     for part in s.split(',') {
         let trimmed = part.trim();
         if trimmed.is_empty() {
@@ -147,7 +149,7 @@ fn parse_rcode_list(s: &str) -> Result<Vec<ResponseCode>> {
         }
         let code = ResponseCode::from_str_ci(trimmed)
             .ok_or_else(|| anyhow!("unknown response code '{trimmed}' (valid: noerror, nxdomain, servfail, refused, formerr, notimp)"))?;
-        out.push(code);
+        out.insert(code);
     }
     if out.is_empty() {
         return Err(anyhow!(
@@ -210,11 +212,11 @@ mod tests {
         let v = parse_rcode_list("noerror,nxdomain,SERVFAIL").unwrap();
         assert_eq!(
             v,
-            vec![
+            HashSet::from([
                 ResponseCode::NoError,
                 ResponseCode::NxDomain,
-                ResponseCode::ServFail
-            ]
+                ResponseCode::ServFail,
+            ])
         );
     }
 
@@ -226,7 +228,7 @@ mod tests {
     #[test]
     fn rcode_filter_passes_matching_host() {
         let filters = Filters {
-            rcode: Some(vec![ResponseCode::NxDomain]),
+            rcode: Some(HashSet::from([ResponseCode::NxDomain])),
             response_type_filter: None,
             match_regex: None,
             exclude_regex: None,
@@ -241,7 +243,7 @@ mod tests {
     #[test]
     fn rcode_filter_drops_non_matching_host() {
         let filters = Filters {
-            rcode: Some(vec![ResponseCode::NxDomain]),
+            rcode: Some(HashSet::from([ResponseCode::NxDomain])),
             response_type_filter: None,
             match_regex: None,
             exclude_regex: None,

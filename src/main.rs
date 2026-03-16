@@ -141,6 +141,21 @@ fn validate_wildcard_domain(value: &str) -> Result<()> {
 }
 
 // ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/// Write a line (with a trailing newline) to an optional output file.
+/// Errors are logged to stderr and swallowed so a single write failure does
+/// not abort the entire run.
+async fn write_line(fh: &mut Option<tokio::fs::File>, line: &str) {
+    if let Some(ref mut f) = fh {
+        if let Err(e) = f.write_all(format!("{line}\n").as_bytes()).await {
+            eprintln!("[ERROR] Failed to write output: {e}");
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
 
@@ -356,11 +371,15 @@ async fn main() -> Result<()> {
                 let rec = HostRecord::from_results(&wo.host, &wo.results);
                 let line = serde_json::to_string(&rec)?;
                 println!("{line}");
-                if let Some(ref mut fh) = output_file {
-                    if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {
-                        eprintln!("[ERROR] Failed to write output: {e}");
-                    }
-                }
+                write_line(&mut output_file, &line).await;
+            } else if let Some(code) = wo.matched_rcode {
+                // Host matched an `-rcode` filter but returned no records
+                // (e.g. NXDOMAIN under `-rcode nxdomain -json`). Emit a
+                // minimal JSON object so the caller sees the result.
+                let rec = HostRecord::empty_with_rcode(&wo.host, code);
+                let line = serde_json::to_string(&rec)?;
+                println!("{line}");
+                write_line(&mut output_file, &line).await;
             }
         } else if wo.results.is_empty() {
             // Host matched an `-rcode` filter but produced no records
@@ -375,11 +394,7 @@ async fn main() -> Result<()> {
                     continue;
                 };
                 println!("{line}");
-                if let Some(ref mut fh) = output_file {
-                    if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {
-                        eprintln!("[ERROR] Failed to write output: {e}");
-                    }
-                }
+                write_line(&mut output_file, &line).await;
             }
         } else {
             for result in &wo.results {
@@ -391,11 +406,7 @@ async fn main() -> Result<()> {
                 }
 
                 println!("{line}");
-                if let Some(ref mut fh) = output_file {
-                    if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {
-                        eprintln!("[ERROR] Failed to write output: {e}");
-                    }
-                }
+                write_line(&mut output_file, &line).await;
             }
         }
     }

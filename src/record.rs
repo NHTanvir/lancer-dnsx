@@ -180,6 +180,8 @@ pub(crate) struct HostRecord {
     pub(crate) caa: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub(crate) any: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) response_code: Option<String>,
     pub(crate) timestamp: String,
 }
 
@@ -207,6 +209,17 @@ impl HostRecord {
             }
         }
         rec
+    }
+
+    /// Create a minimal record for a host that matched an rcode filter but
+    /// returned no DNS records (e.g. NXDOMAIN under `-rcode nxdomain`).
+    pub(crate) fn empty_with_rcode(host: &str, code: ResponseCode) -> Self {
+        HostRecord {
+            host: host.to_string(),
+            response_code: Some(code.to_string().to_lowercase()),
+            timestamp: chrono_now(),
+            ..Default::default()
+        }
     }
 }
 
