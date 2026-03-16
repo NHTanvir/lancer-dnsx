@@ -7,6 +7,8 @@ use clap::Parser;
 /// so clap can handle it. This emulates Go-style single-dash long flags.
 const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
     "list",
+    "domain",
+    "wordlist",
     "aaaa",
     "cname",
     "mx",
@@ -96,6 +98,14 @@ pub(crate) struct Cli {
     /// Input file containing list of hosts/IPs, or comma-separated hosts
     #[arg(short = 'l', long = "list", value_name = "FILE_OR_HOSTS")]
     pub(crate) list: Option<String>,
+
+    /// Target domain(s) to brute-force (comma-separated)
+    #[arg(short = 'd', long = "domain", value_name = "DOMAIN")]
+    pub(crate) domain: Option<String>,
+
+    /// Wordlist file (one subdomain label per line)
+    #[arg(short = 'w', long = "wordlist", value_name = "FILE")]
+    pub(crate) wordlist: Option<String>,
 
     // ---- query type ----
     #[clap(next_help_heading = "Query")]

@@ -1,6 +1,7 @@
 //! lancer-dnsx -- Phase 5: DNS trace and AXFR
 
 mod axfr;
+mod brute;
 mod cli;
 mod filter;
 mod input;
@@ -184,7 +185,26 @@ async fn main() -> Result<()> {
     // Normalize Go-style single-dash long flags to double-dash for clap.
     let raw_args: Vec<String> = std::env::args().collect();
     let normalized = normalize_args(raw_args.into_iter());
-    let cli = Cli::parse_from(normalized);
+    let mut cli = Cli::parse_from(normalized);
+
+    // Brute mode (`-d/--domain`) forces auto-wildcard on. A wordlist probe
+    // against a wildcard zone produces enormous false-positive floods, so
+    // dnsx convention is to always run wildcard detection in this mode --
+    // even when the user passes `-stream` (we emit a warning but still
+    // honor the wildcard enable).
+    let brute_mode = cli.domain.is_some();
+    if brute_mode {
+        if cli.stream && !cli.silent {
+            eprintln!(
+                "[WARN] -stream + -d: wildcard detection cannot be disabled \
+                 in brute mode; forcing wildcard on"
+            );
+        }
+        if cli.list.is_some() && !cli.silent {
+            eprintln!("[WARN] -l is ignored when -d is set (brute-force mode)");
+        }
+        cli.auto_wildcard = true;
+    }
 
     // Handle --version early
     if cli.version {
@@ -233,7 +253,7 @@ async fn main() -> Result<()> {
     //
     // Stream mode (-stream) short-circuits wildcard detection: in low-latency
     // / low-memory mode the user explicitly opts out of these features.
-    let wildcard_cache: Option<Arc<WildcardCache>> = if cli.stream {
+    let wildcard_cache: Option<Arc<WildcardCache>> = if cli.stream && !brute_mode {
         if !cli.silent && (cli.wildcard_domain.is_some() || cli.auto_wildcard) {
             eprintln!("[INFO] -stream is set; wildcard detection disabled");
         }
@@ -247,8 +267,18 @@ async fn main() -> Result<()> {
         None
     };
 
-    // Collect input hosts
-    let hosts = collect_input(cli.list.as_deref(), cli.silent).await?;
+    // Collect input hosts. Brute mode (`-d`) generates `word.domain` pairs
+    // from a wordlist; otherwise fall back to the usual stdin / file / `-l`
+    // collection path.
+    let hosts = if brute_mode {
+        let domain_arg = cli
+            .domain
+            .as_deref()
+            .expect("brute_mode implies cli.domain is Some");
+        brute::generate_brute_input(domain_arg, cli.wordlist.as_deref(), cli.silent).await?
+    } else {
+        collect_input(cli.list.as_deref(), cli.silent).await?
+    };
 
     if hosts.is_empty() {
         if !cli.silent {
