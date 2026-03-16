@@ -1,5 +1,6 @@
-//! lancer-dnsx — Phase 0: skeleton and A/AAAA resolve
+//! lancer-dnsx — Phase 1: all record types + JSON output
 
+use std::collections::HashSet;
 use std::fmt;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -9,8 +10,10 @@ use clap::Parser;
 use hickory_resolver::{
     config::{NameServerConfig, Protocol, ResolverConfig, ResolverOpts},
     error::ResolveErrorKind,
+    proto::rr::RecordType as HickoryRecordType,
     TokioAsyncResolver,
 };
+use serde::Serialize;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 
 /// Known multi-character long flags (without leading dashes).
@@ -19,6 +22,19 @@ use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
     "list",
     "aaaa",
+    "cname",
+    "mx",
+    "txt",
+    "ns",
+    "ptr",
+    "srv",
+    "soa",
+    "caa",
+    "any",
+    "axfr",
+    "recon",
+    "all",
+    "exclude-type",
     "threads",
     "timeout",
     "retry",
@@ -30,6 +46,9 @@ const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
     "no-color",
     "output",
     "version",
+    "json",
+    "omit-raw",
+    "or",
 ];
 
 /// Rewrite single-dash long flags to double-dash so clap can parse them.
@@ -85,6 +104,54 @@ struct Cli {
     #[arg(long = "aaaa")]
     query_aaaa: bool,
 
+    /// Query CNAME records
+    #[arg(long = "cname")]
+    cname: bool,
+
+    /// Query MX records
+    #[arg(long = "mx")]
+    mx: bool,
+
+    /// Query TXT records
+    #[arg(long = "txt")]
+    txt: bool,
+
+    /// Query NS records
+    #[arg(long = "ns")]
+    ns: bool,
+
+    /// Query PTR records
+    #[arg(long = "ptr")]
+    ptr: bool,
+
+    /// Query SRV records
+    #[arg(long = "srv")]
+    srv: bool,
+
+    /// Query SOA records
+    #[arg(long = "soa")]
+    soa: bool,
+
+    /// Query CAA records
+    #[arg(long = "caa")]
+    caa: bool,
+
+    /// Query ANY records
+    #[arg(long = "any")]
+    any: bool,
+
+    /// Query AXFR (zone transfer stub — full impl in Phase 5)
+    #[arg(long = "axfr")]
+    axfr: bool,
+
+    /// Query all record types (A, AAAA, CNAME, MX, TXT, NS, PTR, SRV, SOA, CAA)
+    #[arg(long = "recon", visible_alias = "all")]
+    recon: bool,
+
+    /// Exclude specific record types (comma-separated, e.g. cname,a)
+    #[arg(short = 'e', long = "exclude-type", value_name = "TYPES")]
+    exclude_type: Option<String>,
+
     // ---- filter ----
     #[clap(next_help_heading = "Filter")]
     /// Number of concurrent workers
@@ -100,6 +167,14 @@ struct Cli {
     /// Show only the response value (IP address)
     #[arg(long = "resp-only", visible_alias = "ro")]
     resp_only: bool,
+
+    /// Output as JSONL (one JSON object per host)
+    #[arg(short = 'j', long = "json")]
+    json: bool,
+
+    /// Omit raw response field from JSON output (no-op in Phase 1 — no raw field exists)
+    #[arg(long = "omit-raw", visible_alias = "or")]
+    omit_raw: bool,
 
     /// Suppress banner and non-result output
     #[arg(long = "silent")]
@@ -177,13 +252,80 @@ fn build_resolver(
 }
 
 // ---------------------------------------------------------------------------
-// Resolution helpers
+// Record types
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum RecordType {
     A,
     Aaaa,
+    Cname,
+    Mx,
+    Txt,
+    Ns,
+    Ptr,
+    Srv,
+    Soa,
+    Caa,
+    Any,
+    Axfr,
+}
+
+impl RecordType {
+    fn to_hickory(self) -> HickoryRecordType {
+        match self {
+            RecordType::A => HickoryRecordType::A,
+            RecordType::Aaaa => HickoryRecordType::AAAA,
+            RecordType::Cname => HickoryRecordType::CNAME,
+            RecordType::Mx => HickoryRecordType::MX,
+            RecordType::Txt => HickoryRecordType::TXT,
+            RecordType::Ns => HickoryRecordType::NS,
+            RecordType::Ptr => HickoryRecordType::PTR,
+            RecordType::Srv => HickoryRecordType::SRV,
+            RecordType::Soa => HickoryRecordType::SOA,
+            RecordType::Caa => HickoryRecordType::CAA,
+            RecordType::Any => HickoryRecordType::ANY,
+            RecordType::Axfr => HickoryRecordType::AXFR,
+        }
+    }
+
+    /// Parse a type name (case-insensitive) from a string.
+    fn from_str_ci(s: &str) -> Option<Self> {
+        match s.to_lowercase().as_str() {
+            "a" => Some(RecordType::A),
+            "aaaa" => Some(RecordType::Aaaa),
+            "cname" => Some(RecordType::Cname),
+            "mx" => Some(RecordType::Mx),
+            "txt" => Some(RecordType::Txt),
+            "ns" => Some(RecordType::Ns),
+            "ptr" => Some(RecordType::Ptr),
+            "srv" => Some(RecordType::Srv),
+            "soa" => Some(RecordType::Soa),
+            "caa" => Some(RecordType::Caa),
+            "any" => Some(RecordType::Any),
+            "axfr" => Some(RecordType::Axfr),
+            _ => None,
+        }
+    }
+
+    /// The JSON field name for this record type.
+    #[allow(dead_code)]
+    fn json_key(self) -> &'static str {
+        match self {
+            RecordType::A => "a",
+            RecordType::Aaaa => "aaaa",
+            RecordType::Cname => "cname",
+            RecordType::Mx => "mx",
+            RecordType::Txt => "txt",
+            RecordType::Ns => "ns",
+            RecordType::Ptr => "ptr",
+            RecordType::Srv => "srv",
+            RecordType::Soa => "soa",
+            RecordType::Caa => "caa",
+            RecordType::Any => "any",
+            RecordType::Axfr => "axfr",
+        }
+    }
 }
 
 impl fmt::Display for RecordType {
@@ -191,9 +333,117 @@ impl fmt::Display for RecordType {
         match self {
             RecordType::A => write!(f, "A"),
             RecordType::Aaaa => write!(f, "AAAA"),
+            RecordType::Cname => write!(f, "CNAME"),
+            RecordType::Mx => write!(f, "MX"),
+            RecordType::Txt => write!(f, "TXT"),
+            RecordType::Ns => write!(f, "NS"),
+            RecordType::Ptr => write!(f, "PTR"),
+            RecordType::Srv => write!(f, "SRV"),
+            RecordType::Soa => write!(f, "SOA"),
+            RecordType::Caa => write!(f, "CAA"),
+            RecordType::Any => write!(f, "ANY"),
+            RecordType::Axfr => write!(f, "AXFR"),
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Active query type selection
+// ---------------------------------------------------------------------------
+
+/// Returns true if the user set any explicit record-type flag (other than recon).
+fn any_explicit_type_flag(cli: &Cli) -> bool {
+    cli.query_a
+        || cli.query_aaaa
+        || cli.cname
+        || cli.mx
+        || cli.txt
+        || cli.ns
+        || cli.ptr
+        || cli.srv
+        || cli.soa
+        || cli.caa
+        || cli.any
+        || cli.axfr
+}
+
+/// Parse a comma-separated type list into RecordType values.
+fn parse_type_list(s: &str) -> Vec<RecordType> {
+    s.split(',')
+        .filter_map(|t| RecordType::from_str_ci(t.trim()))
+        .collect()
+}
+
+/// Determine which record types to query based on CLI flags.
+fn active_query_types(cli: &Cli) -> Vec<RecordType> {
+    if cli.recon {
+        // -recon queries all common types (skip AXFR/ANY by default)
+        return vec![
+            RecordType::A,
+            RecordType::Aaaa,
+            RecordType::Cname,
+            RecordType::Mx,
+            RecordType::Txt,
+            RecordType::Ns,
+            RecordType::Ptr,
+            RecordType::Srv,
+            RecordType::Soa,
+            RecordType::Caa,
+        ];
+    }
+
+    let mut types = vec![];
+
+    // A is the default unless the user explicitly asked for other types
+    if cli.query_a || !any_explicit_type_flag(cli) {
+        types.push(RecordType::A);
+    }
+    if cli.query_aaaa {
+        types.push(RecordType::Aaaa);
+    }
+    if cli.cname {
+        types.push(RecordType::Cname);
+    }
+    if cli.mx {
+        types.push(RecordType::Mx);
+    }
+    if cli.txt {
+        types.push(RecordType::Txt);
+    }
+    if cli.ns {
+        types.push(RecordType::Ns);
+    }
+    if cli.ptr {
+        types.push(RecordType::Ptr);
+    }
+    if cli.srv {
+        types.push(RecordType::Srv);
+    }
+    if cli.soa {
+        types.push(RecordType::Soa);
+    }
+    if cli.caa {
+        types.push(RecordType::Caa);
+    }
+    if cli.any {
+        types.push(RecordType::Any);
+    }
+    if cli.axfr {
+        types.push(RecordType::Axfr);
+    }
+
+    // Apply -exclude-type filter
+    if let Some(ref excl) = cli.exclude_type {
+        let excluded = parse_type_list(excl);
+        types.retain(|t| !excluded.contains(t));
+    }
+
+    types
+}
+
+// ---------------------------------------------------------------------------
+// Resolution helpers
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
 struct DnsResult {
@@ -202,64 +452,283 @@ struct DnsResult {
     value: String,
 }
 
+/// Perform a single record-type lookup and append results to `out`.
+async fn lookup_type(
+    resolver: &TokioAsyncResolver,
+    host: &str,
+    rtype: RecordType,
+    silent: bool,
+    out: &mut Vec<DnsResult>,
+) {
+    match rtype {
+        RecordType::A => match resolver.ipv4_lookup(host).await {
+            Ok(resp) => {
+                for r in resp.iter() {
+                    out.push(DnsResult {
+                        host: host.to_string(),
+                        record_type: rtype,
+                        value: r.to_string(),
+                    });
+                }
+            }
+            Err(e) => handle_lookup_error(host, rtype, &e, silent),
+        },
+
+        RecordType::Aaaa => match resolver.ipv6_lookup(host).await {
+            Ok(resp) => {
+                for r in resp.iter() {
+                    out.push(DnsResult {
+                        host: host.to_string(),
+                        record_type: rtype,
+                        value: r.to_string(),
+                    });
+                }
+            }
+            Err(e) => handle_lookup_error(host, rtype, &e, silent),
+        },
+
+        RecordType::Mx => match resolver.mx_lookup(host).await {
+            Ok(resp) => {
+                for r in resp.iter() {
+                    out.push(DnsResult {
+                        host: host.to_string(),
+                        record_type: rtype,
+                        value: format!("{} {}", r.preference(), r.exchange()),
+                    });
+                }
+            }
+            Err(e) => handle_lookup_error(host, rtype, &e, silent),
+        },
+
+        RecordType::Txt => match resolver.txt_lookup(host).await {
+            Ok(resp) => {
+                for r in resp.iter() {
+                    let txt = r
+                        .iter()
+                        .map(|d| String::from_utf8_lossy(d).to_string())
+                        .collect::<Vec<_>>()
+                        .join("");
+                    out.push(DnsResult {
+                        host: host.to_string(),
+                        record_type: rtype,
+                        value: txt,
+                    });
+                }
+            }
+            Err(e) => handle_lookup_error(host, rtype, &e, silent),
+        },
+
+        RecordType::Ns => match resolver.ns_lookup(host).await {
+            Ok(resp) => {
+                for r in resp.iter() {
+                    out.push(DnsResult {
+                        host: host.to_string(),
+                        record_type: rtype,
+                        value: r.to_string(),
+                    });
+                }
+            }
+            Err(e) => handle_lookup_error(host, rtype, &e, silent),
+        },
+
+        // Generic lookup for CNAME, PTR, SRV, SOA, CAA, ANY
+        RecordType::Cname
+        | RecordType::Ptr
+        | RecordType::Srv
+        | RecordType::Soa
+        | RecordType::Caa
+        | RecordType::Any => {
+            match resolver.lookup(host, rtype.to_hickory()).await {
+                Ok(resp) => {
+                    for record in resp.records() {
+                        let value = record.data().map(|d| d.to_string()).unwrap_or_default();
+                        if !value.is_empty() {
+                            out.push(DnsResult {
+                                host: host.to_string(),
+                                record_type: rtype,
+                                value,
+                            });
+                        }
+                    }
+                }
+                Err(e) => handle_lookup_error(host, rtype, &e, silent),
+            }
+        }
+
+        // Full AXFR implementation in Phase 5
+        RecordType::Axfr => {
+            match resolver.lookup(host, HickoryRecordType::AXFR).await {
+                Ok(resp) => {
+                    for record in resp.records() {
+                        let value = record.data().map(|d| d.to_string()).unwrap_or_default();
+                        if !value.is_empty() {
+                            out.push(DnsResult {
+                                host: host.to_string(),
+                                record_type: rtype,
+                                value,
+                            });
+                        }
+                    }
+                }
+                Err(e) => handle_lookup_error(host, rtype, &e, silent),
+            }
+        }
+    }
+}
+
+fn handle_lookup_error(
+    host: &str,
+    rtype: RecordType,
+    e: &hickory_resolver::error::ResolveError,
+    silent: bool,
+) {
+    match e.kind() {
+        ResolveErrorKind::NoRecordsFound { .. } => {}
+        _ => {
+            if !silent {
+                eprintln!("[WARN] {} {}: {}", host, rtype, e);
+            }
+        }
+    }
+}
+
 async fn resolve_host(
     resolver: Arc<TokioAsyncResolver>,
     host: String,
-    query_a: bool,
-    query_aaaa: bool,
+    query_types: Vec<RecordType>,
     silent: bool,
 ) -> Vec<DnsResult> {
     let mut results = Vec::new();
-
-    // Determine which record types to query
-    let do_a = query_a || !query_aaaa; // A is default unless only AAAA requested
-    let do_aaaa = query_aaaa;
-
-    if do_a {
-        match resolver.ipv4_lookup(host.as_str()).await {
-            Ok(response) => {
-                for record in response.iter() {
-                    results.push(DnsResult {
-                        host: host.clone(),
-                        record_type: RecordType::A,
-                        value: record.to_string(),
-                    });
-                }
-            }
-            Err(e) => match e.kind() {
-                ResolveErrorKind::NoRecordsFound { .. } => {}
-                _ => {
-                    if !silent {
-                        eprintln!("[WARN] {} A: {}", host, e);
-                    }
-                }
-            },
-        }
+    for rtype in query_types {
+        lookup_type(&resolver, &host, rtype, silent, &mut results).await;
     }
-
-    if do_aaaa {
-        match resolver.ipv6_lookup(host.as_str()).await {
-            Ok(response) => {
-                for record in response.iter() {
-                    results.push(DnsResult {
-                        host: host.clone(),
-                        record_type: RecordType::Aaaa,
-                        value: record.to_string(),
-                    });
-                }
-            }
-            Err(e) => match e.kind() {
-                ResolveErrorKind::NoRecordsFound { .. } => {}
-                _ => {
-                    if !silent {
-                        eprintln!("[WARN] {} AAAA: {}", host, e);
-                    }
-                }
-            },
-        }
-    }
-
     results
+}
+
+// ---------------------------------------------------------------------------
+// JSON output
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Default)]
+struct HostRecord {
+    host: String,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    a: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    aaaa: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    cname: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    mx: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ns: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    txt: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    ptr: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    srv: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    soa: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    caa: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    any: Vec<String>,
+    timestamp: String,
+}
+
+impl HostRecord {
+    fn from_results(host: &str, results: &[DnsResult]) -> Self {
+        let mut rec = HostRecord {
+            host: host.to_string(),
+            timestamp: chrono_now(),
+            ..Default::default()
+        };
+        for r in results {
+            match r.record_type {
+                RecordType::A => rec.a.push(r.value.clone()),
+                RecordType::Aaaa => rec.aaaa.push(r.value.clone()),
+                RecordType::Cname => rec.cname.push(r.value.clone()),
+                RecordType::Mx => rec.mx.push(r.value.clone()),
+                RecordType::Ns => rec.ns.push(r.value.clone()),
+                RecordType::Txt => rec.txt.push(r.value.clone()),
+                RecordType::Ptr => rec.ptr.push(r.value.clone()),
+                RecordType::Srv => rec.srv.push(r.value.clone()),
+                RecordType::Soa => rec.soa.push(r.value.clone()),
+                RecordType::Caa => rec.caa.push(r.value.clone()),
+                RecordType::Any => rec.any.push(r.value.clone()),
+                RecordType::Axfr => {} // AXFR results not included in JSON record in Phase 1
+            }
+        }
+        rec
+    }
+}
+
+/// Return a UTC timestamp string in RFC 3339 format without depending on chrono.
+fn chrono_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+
+    // Manual RFC 3339 from UNIX seconds (good enough for Phase 1)
+    let s = secs;
+    let sec = s % 60;
+    let min = (s / 60) % 60;
+    let hour = (s / 3600) % 24;
+    let days = s / 86400; // days since 1970-01-01
+
+    // Compute year/month/day from days
+    let (year, month, day) = days_to_ymd(days);
+
+    format!(
+        "{:04}-{:02}-{:02}T{:02}:{:02}:{:02}Z",
+        year, month, day, hour, min, sec
+    )
+}
+
+/// Convert days since Unix epoch to (year, month, day).
+fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
+    // Gregorian calendar calculation
+    let mut year = 1970u64;
+    loop {
+        let leap = is_leap(year);
+        let days_in_year = if leap { 366 } else { 365 };
+        if days < days_in_year {
+            break;
+        }
+        days -= days_in_year;
+        year += 1;
+    }
+    let leap = is_leap(year);
+    let month_days: [u64; 12] = [
+        31,
+        if leap { 29 } else { 28 },
+        31,
+        30,
+        31,
+        30,
+        31,
+        31,
+        30,
+        31,
+        30,
+        31,
+    ];
+    let mut month = 1u64;
+    for &md in &month_days {
+        if days < md {
+            break;
+        }
+        days -= md;
+        month += 1;
+    }
+    (year, month, days + 1)
+}
+
+fn is_leap(year: u64) -> bool {
+    (year % 4 == 0 && year % 100 != 0) || (year % 400 == 0)
 }
 
 // ---------------------------------------------------------------------------
@@ -335,10 +804,6 @@ async fn collect_input(list: Option<&str>, silent: bool) -> Result<Vec<String>> 
 /// - Default (no `-resp`, no `-resp-only`): print just the hostname
 /// - `-resp` / `-re`: print `host TYPE value`
 /// - `-resp-only` / `-ro`: print just `value`
-///
-/// `no_color`: when true, suppress any ANSI escape codes. Phase 0 emits only
-/// plain text, so this flag is a no-op today but is wired through so that
-/// future color formatting can check it.
 fn format_result(result: &DnsResult, resp: bool, resp_only: bool, _no_color: bool) -> String {
     if resp_only {
         result.value.clone()
@@ -347,6 +812,16 @@ fn format_result(result: &DnsResult, resp: bool, resp_only: bool, _no_color: boo
     } else {
         result.host.clone()
     }
+}
+
+// ---------------------------------------------------------------------------
+// Worker message type
+// ---------------------------------------------------------------------------
+
+/// The payload sent from workers to the output loop.
+struct WorkerOutput {
+    host: String,
+    results: Vec<DnsResult>,
 }
 
 // ---------------------------------------------------------------------------
@@ -388,6 +863,9 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    // Determine which record types to query (computed once, shared via Arc)
+    let query_types: Arc<Vec<RecordType>> = Arc::new(active_query_types(&cli));
+
     // Prepare optional output file (plain, no mutex needed — writes are single-threaded)
     let mut output_file: Option<tokio::fs::File> = if let Some(ref path) = cli.output {
         let f = tokio::fs::File::create(path).await?;
@@ -400,12 +878,10 @@ async fn main() -> Result<()> {
     let (tx, rx) = async_channel::bounded::<String>(cli.threads * 2);
 
     // Output channel (tokio mpsc is fine here; workers send, main loop drains)
-    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<Vec<DnsResult>>(cli.threads * 2);
+    let (out_tx, mut out_rx) = tokio::sync::mpsc::channel::<WorkerOutput>(cli.threads * 2);
 
     // Spawn N worker tasks
     let num_workers = cli.threads.min(hosts.len()).max(1);
-    let query_a = cli.query_a;
-    let query_aaaa = cli.query_aaaa;
     let silent = cli.silent;
 
     let mut worker_handles = Vec::with_capacity(num_workers);
@@ -413,14 +889,19 @@ async fn main() -> Result<()> {
         let resolver_c = Arc::clone(&resolver);
         let rx_c = rx.clone();
         let out_tx_c = out_tx.clone();
+        let qtypes_c = Arc::clone(&query_types);
 
         let handle = tokio::spawn(async move {
             while let Ok(host) = rx_c.recv().await {
-                let results =
-                    resolve_host(Arc::clone(&resolver_c), host, query_a, query_aaaa, silent).await;
-                if !results.is_empty() {
-                    let _ = out_tx_c.send(results).await;
-                }
+                let results = resolve_host(
+                    Arc::clone(&resolver_c),
+                    host.clone(),
+                    (*qtypes_c).clone(),
+                    silent,
+                )
+                .await;
+                // Always send even if empty — JSON output needs the host entry
+                let _ = out_tx_c.send(WorkerOutput { host, results }).await;
             }
         });
         worker_handles.push(handle);
@@ -441,25 +922,40 @@ async fn main() -> Result<()> {
     let resp = cli.resp;
     let resp_only = cli.resp_only;
     let no_color = cli.no_color;
+    let json_output = cli.json;
 
     // Deduplicate printed hosts when using default (hostname-only) output
-    let mut printed_hosts: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut printed_hosts: HashSet<String> = HashSet::new();
 
-    while let Some(batch) = out_rx.recv().await {
-        for result in &batch {
-            let line = format_result(result, resp, resp_only, no_color);
-
-            // In default mode, only print a hostname once (multiple A records → one line)
-            if !resp && !resp_only {
-                if !printed_hosts.insert(result.host.clone()) {
-                    continue;
+    while let Some(wo) = out_rx.recv().await {
+        if json_output {
+            // Only emit JSON if there are any results (skip hosts with no records)
+            if !wo.results.is_empty() {
+                let rec = HostRecord::from_results(&wo.host, &wo.results);
+                let line = serde_json::to_string(&rec)?;
+                println!("{line}");
+                if let Some(ref mut fh) = output_file {
+                    if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {
+                        eprintln!("[ERROR] Failed to write output: {e}");
+                    }
                 }
             }
+        } else {
+            for result in &wo.results {
+                let line = format_result(result, resp, resp_only, no_color);
 
-            println!("{line}");
-            if let Some(ref mut fh) = output_file {
-                if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {
-                    eprintln!("[ERROR] Failed to write output: {e}");
+                // In default mode, only print a hostname once (multiple A records → one line)
+                if !resp && !resp_only {
+                    if !printed_hosts.insert(result.host.clone()) {
+                        continue;
+                    }
+                }
+
+                println!("{line}");
+                if let Some(ref mut fh) = output_file {
+                    if let Err(e) = fh.write_all(format!("{line}\n").as_bytes()).await {
+                        eprintln!("[ERROR] Failed to write output: {e}");
+                    }
                 }
             }
         }
