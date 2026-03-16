@@ -435,7 +435,7 @@ impl ResolverPool {
     }
 
     /// Record an outcome against the resolver at `idx`.
-    fn record(&self, idx: usize, success: bool) {
+    pub(crate) fn record(&self, idx: usize, success: bool) {
         if let Some(r) = self.resolvers.get(idx) {
             r.record_outcome(success, self.silent);
         }
@@ -597,7 +597,7 @@ async fn lookup_type(
 /// connection refused, no connections available, etc.) -- one that should
 /// count as a resolver health hit. NXDOMAIN, "no records", malformed
 /// responses (Proto), and internal message errors do NOT count.
-fn is_transport_error(e: &ResolveError) -> bool {
+pub(crate) fn is_transport_error(e: &ResolveError) -> bool {
     matches!(
         e.kind(),
         ResolveErrorKind::Io(_) | ResolveErrorKind::Timeout | ResolveErrorKind::NoConnections

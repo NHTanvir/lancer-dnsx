@@ -31,7 +31,7 @@ use rand::distributions::Alphanumeric;
 use rand::Rng;
 use tokio::sync::RwLock;
 
-use crate::resolver::ResolverPool;
+use crate::resolver::{is_transport_error, ResolverPool};
 
 /// Length of the random label prepended to a wildcard probe.
 const RANDOM_LABEL_LEN: usize = 12;
@@ -39,8 +39,7 @@ const RANDOM_LABEL_LEN: usize = 12;
 /// Cache of wildcard IPs keyed by zone level.
 pub(crate) struct WildcardCache {
     /// Map from level (e.g. `target.com`) to its observed wildcard IP set.
-    /// An empty `ips` set with `confirmed_no_wildcard == true` is the cached
-    /// negative result.
+    /// An empty `ips` set is the cached negative result.
     levels: RwLock<HashMap<String, LevelInfo>>,
     /// Number of random probes per level.
     probes: usize,
@@ -50,11 +49,27 @@ pub(crate) struct WildcardCache {
 
 struct LevelInfo {
     ips: HashSet<IpAddr>,
-    #[allow(dead_code)]
-    confirmed_no_wildcard: bool,
+}
+
+/// Outcome of probing a single level.
+struct ProbeOutcome {
+    /// Union of A and AAAA IPs observed across all probes.
+    ips: HashSet<IpAddr>,
+    /// True if at least one probe completed successfully or returned NXDOMAIN.
+    /// False only if every probe failed with a transport error -- in which
+    /// case the caller should NOT cache the empty result.
+    any_probe_succeeded: bool,
 }
 
 impl WildcardCache {
+    /// Build a wildcard cache.
+    ///
+    /// `probes` is the number of random `<random>.<level>` queries issued per
+    /// level. It is clamped to a minimum of 1 so callers cannot accidentally
+    /// disable probing entirely.
+    ///
+    /// `silent` suppresses both `[INFO]` (wildcard detected) and `[WARN]`
+    /// (all probes failed) log lines emitted by the cache.
     pub(crate) fn new(probes: usize, silent: bool) -> Self {
         // Clamp to a sensible minimum so users can't accidentally disable probing.
         let probes = probes.max(1);
@@ -67,15 +82,25 @@ impl WildcardCache {
 
     /// Probe a level by querying `<random>.<level>` `self.probes` times.
     ///
-    /// Returns the union of A and AAAA IPs observed across all probes.
-    async fn probe_level(&self, pool: &ResolverPool, level: &str) -> HashSet<IpAddr> {
+    /// Returns a `ProbeOutcome` that distinguishes "no wildcard" (all probes
+    /// completed but no IPs returned) from "all probes failed" (network down /
+    /// every resolver timed out) so the caller can decide whether to cache.
+    async fn probe_level(&self, pool: &ResolverPool, level: &str) -> ProbeOutcome {
         let mut all_ips: HashSet<IpAddr> = HashSet::new();
+        let mut any_probe_succeeded = false;
+
         for _ in 0..self.probes {
             let candidate = format!("{}.{}", generate_random_label(), level);
 
             // Probe A
-            if let Some((_idx, tracked)) = pool.pick() {
-                if let Ok(response) = tracked.resolver().ipv4_lookup(&candidate).await {
+            if let Some((idx, tracked)) = pool.pick() {
+                let outcome = tracked.resolver().ipv4_lookup(&candidate).await;
+                let ok = is_health_ok(&outcome);
+                pool.record(idx, ok);
+                if ok {
+                    any_probe_succeeded = true;
+                }
+                if let Ok(response) = outcome {
                     for record in response.iter() {
                         all_ips.insert(IpAddr::V4(record.0));
                     }
@@ -83,18 +108,33 @@ impl WildcardCache {
             }
 
             // Probe AAAA
-            if let Some((_idx, tracked)) = pool.pick() {
-                if let Ok(response) = tracked.resolver().ipv6_lookup(&candidate).await {
+            if let Some((idx, tracked)) = pool.pick() {
+                let outcome = tracked.resolver().ipv6_lookup(&candidate).await;
+                let ok = is_health_ok(&outcome);
+                pool.record(idx, ok);
+                if ok {
+                    any_probe_succeeded = true;
+                }
+                if let Ok(response) = outcome {
                     for record in response.iter() {
                         all_ips.insert(IpAddr::V6(record.0));
                     }
                 }
             }
         }
-        all_ips
+
+        ProbeOutcome {
+            ips: all_ips,
+            any_probe_succeeded,
+        }
     }
 
     /// Return the wildcard IP set for `level`, probing on first miss.
+    ///
+    /// If every probe failed with a transport error, the level is left
+    /// uncached so a later worker may retry. An empty set is returned in that
+    /// case so the current call doesn't block, but no negative-result entry
+    /// is written.
     pub(crate) async fn get_or_probe(
         &self,
         pool: &ResolverPool,
@@ -109,7 +149,20 @@ impl WildcardCache {
         }
 
         // Cache miss -- probe
-        let ips = self.probe_level(pool, level).await;
+        let outcome = self.probe_level(pool, level).await;
+
+        // If every probe transport-failed, don't pollute the cache with a
+        // false-negative entry. Warn (unless silent) and bail out -- a future
+        // worker can retry the level.
+        if !outcome.any_probe_succeeded {
+            if !self.silent {
+                eprintln!(
+                    "[WARN] All wildcard probes failed for *.{level}; leaving level \
+                     uncached for retry"
+                );
+            }
+            return outcome.ips;
+        }
 
         // Insert into cache. If a concurrent worker raced us here, prefer the
         // already-cached entry (its result is just as valid) to avoid logging
@@ -118,31 +171,30 @@ impl WildcardCache {
         if let Some(existing) = w.get(level) {
             return existing.ips.clone();
         }
-        let confirmed_no_wildcard = ips.is_empty();
-        if !self.silent && !ips.is_empty() {
+        if !self.silent && !outcome.ips.is_empty() {
             eprintln!(
                 "[INFO] Detected wildcard at *.{}: {} IP(s)",
                 level,
-                ips.len()
+                outcome.ips.len()
             );
         }
-        w.insert(
-            level.to_string(),
-            LevelInfo {
-                ips: ips.clone(),
-                confirmed_no_wildcard,
-            },
-        );
+        let ips = outcome.ips.clone();
+        w.insert(level.to_string(), LevelInfo { ips: outcome.ips });
         ips
     }
 
     /// True if `host_ips` are a (non-empty) subset of the wildcard IPs for any
     /// candidate level.
     ///
-    /// * `manual_target` -- if set, only the configured target is checked
-    ///   (host must equal it or be a subdomain).
-    /// * `walk_up` -- if true and `manual_target` is None, walk up from the
-    ///   immediate parent of `host` to its apex, checking each level.
+    /// `manual_target` and `walk_up` are independent and additive: if both are
+    /// supplied, the level list is the union of the manual target (when it
+    /// matches the host) and the walk-up parents. Either flag alone behaves
+    /// as before.
+    ///
+    /// * `manual_target` -- if set and `host` equals or is a subdomain of it,
+    ///   the target is checked.
+    /// * `walk_up` -- if true, walk up from the immediate parent of `host`
+    ///   to its apex, checking each level.
     pub(crate) async fn is_wildcard_match(
         &self,
         pool: &ResolverPool,
@@ -155,17 +207,22 @@ impl WildcardCache {
             return false;
         }
 
-        let levels: Vec<String> = if let Some(target) = manual_target {
-            let suffix = format!(".{target}");
-            if host == target || host.ends_with(&suffix) {
-                vec![target.to_string()]
-            } else {
-                Vec::new()
+        let levels: Vec<String> = {
+            let mut v = Vec::new();
+            if let Some(target) = manual_target {
+                let suffix = format!(".{target}");
+                if host == target || host.ends_with(&suffix) {
+                    v.push(target.to_string());
+                }
             }
-        } else if walk_up {
-            levels_walking_up(host)
-        } else {
-            Vec::new()
+            if walk_up {
+                for lvl in levels_walking_up(host) {
+                    if !v.contains(&lvl) {
+                        v.push(lvl);
+                    }
+                }
+            }
+            v
         };
 
         for level in &levels {
@@ -178,6 +235,18 @@ impl WildcardCache {
             }
         }
         false
+    }
+}
+
+/// True if a lookup result counts as "the resolver is healthy" -- either an
+/// `Ok` response or NXDOMAIN. Transport errors (timeouts, IO, no
+/// connections) count as failures.
+fn is_health_ok<T>(
+    outcome: &Result<T, hickory_resolver::error::ResolveError>,
+) -> bool {
+    match outcome {
+        Ok(_) => true,
+        Err(e) => !is_transport_error(e),
     }
 }
 
@@ -194,19 +263,32 @@ fn generate_random_label() -> String {
     s
 }
 
+/// True if the input parses as a bare IPv4 address (and therefore should not
+/// be walked up for wildcard levels).
+fn looks_like_ipv4(s: &str) -> bool {
+    s.parse::<std::net::Ipv4Addr>().is_ok()
+}
+
 /// Return the candidate parent levels of `host`, from immediate parent up to
 /// the apex (skipping the TLD).
 ///
 /// `sub.foo.target.com` -> [`foo.target.com`, `target.com`]
 /// `target.com`         -> []
 /// `co.uk`              -> []
+/// `1.2.3.4`            -> []
 ///
 /// Note: this is a heuristic that treats the final label as a TLD. It will
 /// over-trim for ccTLD-plus-SLD zones (e.g. `*.example.co.uk` won't have
 /// `co.uk` probed, which is the correct behavior anyway). It will not probe
 /// the host itself, which is also intentional -- the host's resolution is
-/// what we're trying to validate.
+/// what we're trying to validate. IPv4 inputs short-circuit to an empty
+/// result so we don't issue probes against e.g. `3.4.1.2.in-addr.arpa`.
 fn levels_walking_up(host: &str) -> Vec<String> {
+    // IPv4 addresses look like 4 numeric labels separated by dots -- the
+    // walk-up logic would otherwise treat them as a domain. Skip those.
+    if looks_like_ipv4(host) {
+        return Vec::new();
+    }
     let parts: Vec<&str> = host.split('.').filter(|p| !p.is_empty()).collect();
     let mut levels = Vec::new();
     if parts.len() < 3 {
@@ -262,5 +344,12 @@ mod tests {
         // Trailing dot or doubled dots shouldn't produce empty levels
         let v = levels_walking_up("www.example.com.");
         assert_eq!(v, vec!["example.com"]);
+    }
+
+    #[test]
+    fn levels_skip_ipv4_address() {
+        // Bare IPv4 inputs must not be walked as if they were domains.
+        assert!(levels_walking_up("1.2.3.4").is_empty());
+        assert!(levels_walking_up("192.168.1.1").is_empty());
     }
 }

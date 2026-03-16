@@ -149,6 +149,8 @@ pub(crate) struct Cli {
     #[arg(short = 't', long = "threads", default_value_t = 100)]
     pub(crate) threads: usize,
 
+    // ---- wildcard ----
+    #[clap(next_help_heading = "Wildcard")]
     /// Manual wildcard probe target; IPs from <random>.<this> are treated as wildcards
     #[arg(long = "wildcard-domain", visible_alias = "wd", value_name = "DOMAIN")]
     pub(crate) wildcard_domain: Option<String>,

@@ -120,6 +120,24 @@ fn active_query_types(cli: &Cli) -> Vec<RecordType> {
     types
 }
 
+/// Validate the value of `--wildcard-domain`. Returns Ok(()) if it looks like
+/// a domain name (e.g. `target.com`), otherwise an error suitable for
+/// surfacing directly to the user.
+fn validate_wildcard_domain(value: &str) -> Result<()> {
+    let trimmed = value.trim();
+    let invalid = trimmed.is_empty()
+        || !trimmed.contains('.')
+        || trimmed.starts_with('.')
+        || trimmed.ends_with('.')
+        || trimmed.chars().any(char::is_whitespace);
+    if invalid {
+        anyhow::bail!(
+            "--wildcard-domain must be a domain name (e.g., target.com), got: {value}"
+        );
+    }
+    Ok(())
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -135,6 +153,13 @@ async fn main() -> Result<()> {
     if cli.version {
         println!("lancer-dnsx v{VERSION}");
         return Ok(());
+    }
+
+    // Validate --wildcard-domain looks like a domain name (not a URL, IP, or
+    // bare label). We do this early so a typo fails fast before any
+    // resolvers are loaded.
+    if let Some(ref value) = cli.wildcard_domain {
+        validate_wildcard_domain(value)?;
     }
 
     // Banner (suppressed by --silent)
@@ -244,7 +269,7 @@ async fn main() -> Result<()> {
                                 &host,
                                 &host_ips,
                                 auto_wildcard,
-                                wd_c.as_deref().map(|s| s.as_str()),
+                                wd_c.as_deref().map(String::as_str),
                             )
                             .await;
                         if is_wildcard {
