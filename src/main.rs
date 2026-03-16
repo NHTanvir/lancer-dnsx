@@ -10,7 +10,7 @@ use hickory_resolver::{
     TokioAsyncResolver,
 };
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::sync::{mpsc, RwLock};
+use tokio::sync::mpsc;
 
 /// Known multi-character long flags (without leading dashes).
 /// Any `-flag` that appears in this list gets rewritten to `--flag`
@@ -69,11 +69,13 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 )]
 struct Cli {
     // ---- input ----
+    #[clap(next_help_heading = "Input")]
     /// Input file containing list of hosts/IPs, or comma-separated hosts
     #[arg(short = 'l', long = "list", value_name = "FILE_OR_HOSTS")]
     list: Option<String>,
 
     // ---- query type ----
+    #[clap(next_help_heading = "Query")]
     /// Query A records (default)
     #[arg(short = 'a', long = "a", default_value_t = false)]
     query_a: bool,
@@ -82,21 +84,14 @@ struct Cli {
     #[arg(long = "aaaa", default_value_t = false)]
     query_aaaa: bool,
 
-    // ---- rate-limit / concurrency ----
+    // ---- filter ----
+    #[clap(next_help_heading = "Filter")]
     /// Number of concurrent workers
     #[arg(short = 't', long = "threads", default_value_t = 100)]
     threads: usize,
 
-    // ---- configurations ----
-    /// Per-query timeout in seconds
-    #[arg(long = "timeout", default_value_t = 3)]
-    timeout: u64,
-
-    /// Number of retries on failure
-    #[arg(long = "retry", default_value_t = 2)]
-    retry: usize,
-
     // ---- output ----
+    #[clap(next_help_heading = "Output")]
     /// Show full response value alongside host (format: "host TYPE value")
     #[arg(long = "resp", visible_alias = "re", default_value_t = false)]
     resp: bool,
@@ -110,6 +105,8 @@ struct Cli {
     silent: bool,
 
     /// Disable ANSI color output
+    /// Phase 0: output is plain text with no ANSI codes; this flag is wired
+    /// through to format_result so future color output can be suppressed.
     #[arg(long = "no-color", default_value_t = false)]
     no_color: bool,
 
@@ -117,7 +114,24 @@ struct Cli {
     #[arg(short = 'o', long = "output", value_name = "FILE")]
     output: Option<String>,
 
+    // ---- optimization ----
+    #[clap(next_help_heading = "Optimization")]
+    /// (reserved for future rate-limit / concurrency flags)
+    #[arg(skip)]
+    _optimization_placeholder: (),
+
+    // ---- configurations ----
+    #[clap(next_help_heading = "Configurations")]
+    /// Per-query timeout in seconds
+    #[arg(long = "timeout", default_value_t = 3)]
+    timeout: u64,
+
+    /// Number of retries on failure
+    #[arg(long = "retry", default_value_t = 2)]
+    retry: usize,
+
     // ---- debug ----
+    #[clap(next_help_heading = "Debug")]
     /// Print version and exit
     #[arg(short = 'v', long = "version", default_value_t = false)]
     version: bool,
@@ -282,11 +296,18 @@ async fn collect_input(list: Option<&str>) -> Result<Vec<String>> {
 // Output helpers
 // ---------------------------------------------------------------------------
 
-fn format_result(result: &DnsResult, resp: bool, resp_only: bool) -> String {
+/// Format a single DNS result for output.
+///
+/// `no_color`: when true, suppress any ANSI escape codes. Phase 0 emits only
+/// plain text, so this flag is a no-op today but is wired through so that
+/// future color formatting can check it.
+fn format_result(result: &DnsResult, resp: bool, resp_only: bool, _no_color: bool) -> String {
     if resp_only {
         result.value.clone()
     } else if resp {
-        format!("{} {} [{}]", result.host, result.record_type, result.value)
+        // "-resp" appends the resolved value alongside host and record type,
+        // without brackets (spec: "host TYPE value").
+        format!("{} {} {}", result.host, result.record_type, result.value)
     } else {
         format!("{} {} {}", result.host, result.record_type, result.value)
     }
@@ -319,7 +340,6 @@ async fn main() -> Result<()> {
 
     // Build resolver using the shared name-server pool
     let servers = default_name_servers();
-    let _servers_arc = Arc::new(RwLock::new(servers.clone()));
     let resolver = Arc::new(build_resolver(&servers, cli.timeout, cli.retry)?);
 
     // Collect input hosts
@@ -394,11 +414,12 @@ async fn main() -> Result<()> {
     // Collect and print results
     let resp = cli.resp;
     let resp_only = cli.resp_only;
+    let no_color = cli.no_color;
 
     use tokio::io::AsyncWriteExt;
     while let Some(batch) = out_rx.recv().await {
         for result in &batch {
-            let line = format_result(result, resp, resp_only);
+            let line = format_result(result, resp, resp_only, no_color);
             println!("{line}");
             if let Some(ref fh) = output_file {
                 let mut guard = fh.lock().await;
