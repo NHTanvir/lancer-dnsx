@@ -271,19 +271,78 @@ async fn main() -> Result<()> {
     // ---- Phase 5: standalone probe modes -------------------------------
     // -trace short-circuits normal resolution.
     if cli.trace {
-        for host in &hosts {
-            match trace::trace_host(host, cli.trace_max_recursion).await {
-                Ok(steps) => {
-                    let text = trace::format_trace_text(host, &steps);
-                    print!("{text}");
-                    write_line(&mut output_file, text.trim_end()).await;
-                }
-                Err(e) => {
-                    if !cli.silent {
-                        eprintln!("[WARN] trace {host}: {e}");
+        let (work_tx, work_rx) = async_channel::bounded::<String>(cli.threads * 2);
+        // Output channel so workers can send formatted text to a single drain
+        // task, guaranteeing non-interleaved output lines.
+        let (out_tx5, mut out_rx5) =
+            tokio::sync::mpsc::channel::<(String, Option<String>)>(cli.threads * 2);
+
+        let num_workers = cli.threads.min(hosts.len()).max(1);
+        let max_rec = cli.trace_max_recursion;
+        let silent5 = cli.silent;
+        let mut trace_handles = Vec::with_capacity(num_workers);
+
+        for _ in 0..num_workers {
+            let rx_c = work_rx.clone();
+            let out_c = out_tx5.clone();
+            let handle = tokio::spawn(async move {
+                while let Ok(host) = rx_c.recv().await {
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(60),
+                        trace::trace_host(&host, max_rec),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(steps)) => {
+                            let text = trace::format_trace_text(&host, &steps);
+                            let _ = out_c.send((text, None)).await;
+                        }
+                        Ok(Err(e)) => {
+                            if !silent5 {
+                                let _ = out_c
+                                    .send((
+                                        String::new(),
+                                        Some(format!("[ERROR] trace {} failed: {}", host, e)),
+                                    ))
+                                    .await;
+                            }
+                        }
+                        Err(_) => {
+                            let _ = out_c
+                                .send((
+                                    String::new(),
+                                    Some(format!(
+                                        "[ERROR] trace {} timed out after 60s",
+                                        host
+                                    )),
+                                ))
+                                .await;
+                        }
                     }
                 }
+            });
+            trace_handles.push(handle);
+        }
+        drop(out_tx5);
+
+        // Feed hosts
+        for host in hosts {
+            let _ = work_tx.send(host).await;
+        }
+        drop(work_tx);
+
+        // Drain output (single task → serialized writes)
+        while let Some((text, err)) = out_rx5.recv().await {
+            if let Some(msg) = err {
+                eprintln!("{msg}");
+            } else if !text.is_empty() {
+                print!("{text}");
+                write_line(&mut output_file, text.trim_end()).await;
             }
+        }
+
+        for h in trace_handles {
+            let _ = h.await;
         }
         return Ok(());
     }
@@ -291,19 +350,76 @@ async fn main() -> Result<()> {
     // -axfr (when set alone, or as the only active record type) routes to
     // the dedicated AXFR implementation instead of the regular lookup path.
     if cli.axfr && !cli.recon && !any_non_axfr_type_flag(&cli) {
-        for host in &hosts {
-            match axfr::axfr_host(host, &pool).await {
-                Ok(report) => {
-                    let text = axfr::format_axfr_text(&report);
-                    print!("{text}");
-                    write_line(&mut output_file, text.trim_end()).await;
-                }
-                Err(e) => {
-                    if !cli.silent {
-                        eprintln!("[WARN] axfr {host}: {e}");
+        let (work_tx, work_rx) = async_channel::bounded::<String>(cli.threads * 2);
+        let (out_tx5, mut out_rx5) =
+            tokio::sync::mpsc::channel::<(String, Option<String>)>(cli.threads * 2);
+
+        let num_workers = cli.threads.min(hosts.len()).max(1);
+        let silent5 = cli.silent;
+        let mut axfr_handles = Vec::with_capacity(num_workers);
+
+        for _ in 0..num_workers {
+            let rx_c = work_rx.clone();
+            let out_c = out_tx5.clone();
+            let pool_c = Arc::clone(&pool);
+            let handle = tokio::spawn(async move {
+                while let Ok(host) = rx_c.recv().await {
+                    let result = tokio::time::timeout(
+                        std::time::Duration::from_secs(30),
+                        axfr::axfr_host(&host, &pool_c),
+                    )
+                    .await;
+                    match result {
+                        Ok(Ok(report)) => {
+                            let text = axfr::format_axfr_text(&report);
+                            let _ = out_c.send((text, None)).await;
+                        }
+                        Ok(Err(e)) => {
+                            if !silent5 {
+                                let _ = out_c
+                                    .send((
+                                        String::new(),
+                                        Some(format!("[ERROR] axfr {} failed: {}", host, e)),
+                                    ))
+                                    .await;
+                            }
+                        }
+                        Err(_) => {
+                            let _ = out_c
+                                .send((
+                                    String::new(),
+                                    Some(format!(
+                                        "[ERROR] axfr {} timed out after 30s",
+                                        host
+                                    )),
+                                ))
+                                .await;
+                        }
                     }
                 }
+            });
+            axfr_handles.push(handle);
+        }
+        drop(out_tx5);
+
+        // Feed hosts
+        for host in hosts {
+            let _ = work_tx.send(host).await;
+        }
+        drop(work_tx);
+
+        // Drain output
+        while let Some((text, err)) = out_rx5.recv().await {
+            if let Some(msg) = err {
+                eprintln!("{msg}");
+            } else if !text.is_empty() {
+                print!("{text}");
+                write_line(&mut output_file, text.trim_end()).await;
             }
+        }
+
+        for h in axfr_handles {
+            let _ = h.await;
         }
         return Ok(());
     }

@@ -251,7 +251,16 @@ pub(crate) async fn trace_host(host: &str, max_recursion: u32) -> Result<Vec<Tra
     // response to a name we have no path to.
     let mut last_owner_depth: usize = 0;
 
-    for _ in 0..max_recursion {
+    // Process each response (starting with the root's response) and follow
+    // delegations up to max_recursion follow-up queries. We use a helper
+    // macro to avoid duplicating the process-response block. The root
+    // response is always processed unconditionally (step 0 of the loop
+    // below, with no preceding query) so that max_recursion=0 still
+    // surfaces the root's reply rather than discarding it.
+    //
+    // Loop: iteration 0 → process root response (already in `response`).
+    //       iterations 1..=max_recursion → follow one delegation per turn.
+    for hop in 0..=max_recursion {
         // Did we get an authoritative answer?
         if !response.answers().is_empty() {
             let answers: Vec<String> =
@@ -310,6 +319,12 @@ pub(crate) async fn trace_host(host: &str, max_recursion: u32) -> Result<Vec<Tra
         }
         last_owner_depth = owner_depth;
 
+        // We have consumed this hop's delegation; if we have reached the
+        // follow-up cap we must stop before issuing another query.
+        if hop == max_recursion {
+            break;
+        }
+
         // Pick the first NS we can resolve (glue first, then fallback).
         let mut next_server: Option<(String, IpAddr)> = None;
         for ns in &ns_names {
@@ -366,8 +381,9 @@ pub(crate) async fn trace_host(host: &str, max_recursion: u32) -> Result<Vec<Tra
 
 /// Pretty-print a trace result as plain text.
 pub(crate) fn format_trace_text(host: &str, steps: &[TraceStep]) -> String {
+    use std::fmt::Write;
     let mut out = String::new();
-    out.push_str(&format!("TRACE {host}\n"));
+    writeln!(out, "TRACE {host}").unwrap();
     for s in steps {
         match &s.response_kind {
             TraceResponseKind::Delegation(ns_list) => {
@@ -376,32 +392,40 @@ pub(crate) fn format_trace_text(host: &str, steps: &[TraceStep]) -> String {
                 } else {
                     ns_list.join(", ")
                 };
-                out.push_str(&format!(
-                    "  [{}] {} ({}) -> NS ({})\n",
+                writeln!(
+                    out,
+                    "  [{}] {} ({}) -> NS ({})",
                     s.step, s.server, s.server_ip, joined
-                ));
+                )
+                .unwrap();
             }
             TraceResponseKind::Answer(records) => {
                 if records.is_empty() {
-                    out.push_str(&format!(
-                        "  [{}] {} ({}) -> (empty answer)\n",
+                    writeln!(
+                        out,
+                        "  [{}] {} ({}) -> (empty answer)",
                         s.step, s.server, s.server_ip
-                    ));
+                    )
+                    .unwrap();
                 } else {
-                    out.push_str(&format!(
-                        "  [{}] {} ({}) -> {}\n",
+                    writeln!(
+                        out,
+                        "  [{}] {} ({}) -> {}",
                         s.step,
                         s.server,
                         s.server_ip,
                         records.join(", ")
-                    ));
+                    )
+                    .unwrap();
                 }
             }
             TraceResponseKind::Error(msg) => {
-                out.push_str(&format!(
-                    "  [{}] {} ({}) -> ERROR: {}\n",
+                writeln!(
+                    out,
+                    "  [{}] {} ({}) -> ERROR: {}",
                     s.step, s.server, s.server_ip, msg
-                ));
+                )
+                .unwrap();
             }
         }
     }

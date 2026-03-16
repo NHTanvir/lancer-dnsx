@@ -156,7 +156,7 @@ async fn try_axfr_one(zone: &str, ns_ip: std::net::IpAddr) -> Result<Vec<String>
         return Err("no response from server".to_string());
     }
     if records.is_empty() {
-        return Err("server returned no records (likely refused)".to_string());
+        return Err("server returned NoError with no records".to_string());
     }
     Ok(records)
 }
@@ -187,8 +187,9 @@ pub(crate) async fn axfr_host(host: &str, pool: &ResolverPool) -> Result<AxfrRep
 
 /// Pretty-print an `AxfrReport` to plain text.
 pub(crate) fn format_axfr_text(report: &AxfrReport) -> String {
+    use std::fmt::Write;
     let mut out = String::new();
-    out.push_str(&format!("AXFR {}\n", report.host));
+    writeln!(out, "AXFR {}", report.host).unwrap();
     if report.per_ns.is_empty() {
         out.push_str("  (no NS records found)\n");
         return out;
@@ -200,21 +201,25 @@ pub(crate) fn format_axfr_text(report: &AxfrReport) -> String {
             .unwrap_or_else(|| "?".to_string());
         match &ns.outcome {
             AxfrOutcome::Records(records) => {
-                out.push_str(&format!(
-                    "  {} ({}) -> SUCCESS ({} records)\n",
+                writeln!(
+                    out,
+                    "  {} ({}) -> SUCCESS ({} records)",
                     ns.ns_name,
                     ip_str,
                     records.len()
-                ));
+                )
+                .unwrap();
                 for r in records {
-                    out.push_str(&format!("    {r}\n"));
+                    writeln!(out, "    {r}").unwrap();
                 }
             }
             AxfrOutcome::Error(msg) => {
-                out.push_str(&format!(
-                    "  {} ({}) -> FAILED: {}\n",
+                writeln!(
+                    out,
+                    "  {} ({}) -> FAILED: {}",
                     ns.ns_name, ip_str, msg
-                ));
+                )
+                .unwrap();
             }
         }
     }
