@@ -1,1 +1,16 @@
+# Local-only blueprint (never push to GitHub)
 plan.md
+
+# Rust build artifacts
+target/
+build/
+dist/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+*.log
+.idea/
+.vscode/
