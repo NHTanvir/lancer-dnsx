@@ -1,0 +1,204 @@
+//! CLI definition and Go-style single-dash flag normalization.
+
+use clap::Parser;
+
+/// Known multi-character long flags (without leading dashes).
+/// Any `-flag` that appears in this list gets rewritten to `--flag`
+/// so clap can handle it. This emulates Go-style single-dash long flags.
+const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
+    "list",
+    "aaaa",
+    "cname",
+    "mx",
+    "txt",
+    "ns",
+    "ptr",
+    "srv",
+    "soa",
+    "caa",
+    "any",
+    "axfr",
+    "recon",
+    "all",
+    "exclude-type",
+    "threads",
+    "timeout",
+    "retry",
+    "resp-only",
+    "ro",
+    "resp",
+    "re",
+    "silent",
+    "no-color",
+    "output",
+    "version",
+    "json",
+    "omit-raw",
+    "or",
+    "resolver",
+    "resolver-list",
+    "resolvers-file",
+    "rL",
+];
+
+/// Rewrite single-dash long flags to double-dash so clap can parse them.
+///
+/// `-silent` -> `--silent`
+/// `-resp-only` -> `--resp-only`
+/// `-l foo` stays as `-l foo` (single char, handled natively)
+pub(crate) fn normalize_args(args: impl Iterator<Item = String>) -> Vec<String> {
+    args.map(|arg| {
+        // Only touch things that start with exactly one '-' followed by 2+ chars
+        if arg.starts_with('-') && !arg.starts_with("--") && arg.len() >= 3 {
+            let without_dash = &arg[1..];
+            // Check if the base (before '=') matches a known long flag
+            let base = without_dash.split('=').next().unwrap_or(without_dash);
+            if SINGLE_DASH_LONG_FLAGS.contains(&base) {
+                return format!("-{arg}"); // add one more '-'
+            }
+        }
+        arg
+    })
+    .collect()
+}
+
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Rust clone of dnsx -- fast and multi-purpose DNS toolkit
+#[derive(Parser, Debug)]
+#[command(
+    name = "lancer-dnsx",
+    version = VERSION,
+    about = "Rust clone of dnsx -- fast and multi-purpose DNS toolkit",
+    long_about = None,
+    disable_version_flag = true,
+)]
+pub(crate) struct Cli {
+    // ---- input ----
+    #[clap(next_help_heading = "Input")]
+    /// Input file containing list of hosts/IPs, or comma-separated hosts
+    #[arg(short = 'l', long = "list", value_name = "FILE_OR_HOSTS")]
+    pub(crate) list: Option<String>,
+
+    // ---- query type ----
+    #[clap(next_help_heading = "Query")]
+    /// Query A records (default)
+    #[arg(short = 'a')]
+    pub(crate) query_a: bool,
+
+    /// Query AAAA records
+    #[arg(long = "aaaa")]
+    pub(crate) query_aaaa: bool,
+
+    /// Query CNAME records
+    #[arg(long = "cname")]
+    pub(crate) cname: bool,
+
+    /// Query MX records
+    #[arg(long = "mx")]
+    pub(crate) mx: bool,
+
+    /// Query TXT records
+    #[arg(long = "txt")]
+    pub(crate) txt: bool,
+
+    /// Query NS records
+    #[arg(long = "ns")]
+    pub(crate) ns: bool,
+
+    /// Query PTR records
+    #[arg(long = "ptr")]
+    pub(crate) ptr: bool,
+
+    /// Query SRV records
+    #[arg(long = "srv")]
+    pub(crate) srv: bool,
+
+    /// Query SOA records
+    #[arg(long = "soa")]
+    pub(crate) soa: bool,
+
+    /// Query CAA records
+    #[arg(long = "caa")]
+    pub(crate) caa: bool,
+
+    /// Query ANY records
+    #[arg(long = "any")]
+    pub(crate) any: bool,
+
+    /// Query AXFR (zone transfer stub -- full impl in Phase 5)
+    #[arg(long = "axfr")]
+    pub(crate) axfr: bool,
+
+    /// Query all record types (A, AAAA, CNAME, MX, TXT, NS, PTR, SRV, SOA, CAA)
+    #[arg(long = "recon", visible_alias = "all")]
+    pub(crate) recon: bool,
+
+    /// Exclude specific record types (comma-separated, e.g. cname,a)
+    #[arg(short = 'e', long = "exclude-type", value_name = "TYPES")]
+    pub(crate) exclude_type: Option<String>,
+
+    // ---- filter ----
+    #[clap(next_help_heading = "Filter")]
+    /// Number of concurrent workers
+    #[arg(short = 't', long = "threads", default_value_t = 100)]
+    pub(crate) threads: usize,
+
+    // ---- output ----
+    #[clap(next_help_heading = "Output")]
+    /// Show full response value alongside host (format: "host TYPE value")
+    #[arg(long = "resp", visible_alias = "re")]
+    pub(crate) resp: bool,
+
+    /// Show only the response value (IP address)
+    #[arg(long = "resp-only", visible_alias = "ro")]
+    pub(crate) resp_only: bool,
+
+    /// Output as JSONL (one JSON object per host)
+    #[arg(short = 'j', long = "json")]
+    pub(crate) json: bool,
+
+    /// Omit raw response field from JSON output
+    #[arg(long = "omit-raw", visible_alias = "or")]
+    pub(crate) omit_raw: bool,
+
+    /// Suppress banner and non-result output
+    #[arg(long = "silent")]
+    pub(crate) silent: bool,
+
+    /// Disable ANSI color output
+    #[arg(long = "no-color")]
+    pub(crate) no_color: bool,
+
+    /// Write output to file
+    #[arg(short = 'o', long = "output", value_name = "FILE")]
+    pub(crate) output: Option<String>,
+
+    // ---- configurations ----
+    #[clap(next_help_heading = "Configurations")]
+    /// Per-query timeout in seconds
+    #[arg(long = "timeout", default_value_t = 3)]
+    pub(crate) timeout: u64,
+
+    /// Number of retries on failure
+    #[arg(long = "retry", default_value_t = 2)]
+    pub(crate) retry: usize,
+
+    /// Custom resolvers, comma-separated (e.g. 1.1.1.1,doh:https://cloudflare-dns.com/dns-query)
+    #[arg(short = 'r', long = "resolver", value_name = "RESOLVERS")]
+    pub(crate) resolver: Option<String>,
+
+    /// File containing resolvers, one per line
+    #[arg(
+        long = "resolvers-file",
+        value_name = "FILE",
+        visible_aliases = ["rL", "resolver-list"]
+    )]
+    pub(crate) resolver_list: Option<String>,
+
+    // ---- debug ----
+    #[clap(next_help_heading = "Debug")]
+    /// Print version and exit
+    #[arg(short = 'v', long = "version")]
+    pub(crate) version: bool,
+}
