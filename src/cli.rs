@@ -39,6 +39,11 @@ const SINGLE_DASH_LONG_FLAGS: &[&str] = &[
     "resolver-list",
     "resolvers-file",
     "rL",
+    "wildcard-domain",
+    "wd",
+    "auto-wildcard",
+    "wildcard-threshold",
+    "wt",
 ];
 
 /// Rewrite single-dash long flags to double-dash so clap can parse them.
@@ -143,6 +148,23 @@ pub(crate) struct Cli {
     /// Number of concurrent workers
     #[arg(short = 't', long = "threads", default_value_t = 100)]
     pub(crate) threads: usize,
+
+    /// Manual wildcard probe target; IPs from <random>.<this> are treated as wildcards
+    #[arg(long = "wildcard-domain", visible_alias = "wd", value_name = "DOMAIN")]
+    pub(crate) wildcard_domain: Option<String>,
+
+    /// Auto-detect wildcard zones by walking up from each host
+    #[arg(long = "auto-wildcard")]
+    pub(crate) auto_wildcard: bool,
+
+    /// Number of random probes per wildcard level (default 5)
+    #[arg(
+        long = "wildcard-threshold",
+        visible_alias = "wt",
+        default_value_t = 5,
+        value_name = "N"
+    )]
+    pub(crate) wildcard_threshold: usize,
 
     // ---- output ----
     #[clap(next_help_heading = "Output")]

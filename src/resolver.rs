@@ -332,6 +332,13 @@ impl TrackedResolver {
         self.evicted.load(Ordering::Acquire)
     }
 
+    /// Borrow the underlying `TokioAsyncResolver`. Exposed so that adjacent
+    /// modules (e.g. wildcard probing) can run lookups directly while still
+    /// going through the pool's round-robin selection.
+    pub(crate) fn resolver(&self) -> &TokioAsyncResolver {
+        &self.resolver
+    }
+
     /// Record a query outcome. Evicts the resolver if the error rate over the
     /// sliding window (with at least `HEALTH_MIN_SAMPLES` samples) exceeds
     /// `HEALTH_EVICT_RATE`. Emits a one-time warning on eviction unless silent.
@@ -411,7 +418,7 @@ impl ResolverPool {
     /// Round-robin pick of the next non-evicted resolver.
     /// Returns `(index, resolver)` so the caller can later report the outcome
     /// back to the right slot.
-    fn pick(&self) -> Option<(usize, &TrackedResolver)> {
+    pub(crate) fn pick(&self) -> Option<(usize, &TrackedResolver)> {
         let n = self.resolvers.len();
         if n == 0 {
             return None;

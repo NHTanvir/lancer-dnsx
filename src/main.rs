@@ -1,12 +1,14 @@
-//! lancer-dnsx -- Phase 2: custom resolver pool and DoH/DoT support
+//! lancer-dnsx -- Phase 3: wildcard DNS detection
 
 mod cli;
 mod input;
 mod output;
 mod record;
 mod resolver;
+mod wildcard;
 
 use std::collections::HashSet;
+use std::net::IpAddr;
 use std::sync::Arc;
 
 use anyhow::Result;
@@ -18,6 +20,7 @@ use crate::input::collect_input;
 use crate::output::{format_result, WorkerOutput};
 use crate::record::{HostRecord, RecordType};
 use crate::resolver::{load_resolvers, resolve_host, ResolverPool};
+use crate::wildcard::WildcardCache;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -158,6 +161,19 @@ async fn main() -> Result<()> {
         cli.silent,
     )?);
 
+    // Build the wildcard cache if either wildcard mode is enabled. Shared
+    // across all workers; interior `RwLock` lets workers populate the cache
+    // collaboratively (each level is probed at most once).
+    let wildcard_cache: Option<Arc<WildcardCache>> =
+        if cli.wildcard_domain.is_some() || cli.auto_wildcard {
+            Some(Arc::new(WildcardCache::new(
+                cli.wildcard_threshold,
+                cli.silent,
+            )))
+        } else {
+            None
+        };
+
     // Collect input hosts
     let hosts = collect_input(cli.list.as_deref(), cli.silent).await?;
 
@@ -188,6 +204,8 @@ async fn main() -> Result<()> {
     // Spawn N worker tasks
     let num_workers = cli.threads.min(hosts.len()).max(1);
     let silent = cli.silent;
+    let auto_wildcard = cli.auto_wildcard;
+    let wildcard_domain: Option<Arc<String>> = cli.wildcard_domain.clone().map(Arc::new);
 
     let mut worker_handles = Vec::with_capacity(num_workers);
     for _ in 0..num_workers {
@@ -195,6 +213,8 @@ async fn main() -> Result<()> {
         let rx_c = rx.clone();
         let out_tx_c = out_tx.clone();
         let qtypes_c = Arc::clone(&query_types);
+        let wildcard_c = wildcard_cache.as_ref().map(Arc::clone);
+        let wd_c = wildcard_domain.clone();
 
         let handle = tokio::spawn(async move {
             while let Ok(host) = rx_c.recv().await {
@@ -205,6 +225,37 @@ async fn main() -> Result<()> {
                     silent,
                 )
                 .await;
+
+                // Wildcard filtering: drop results when every A/AAAA IP for
+                // this host is a member of an applicable wildcard set.
+                if let Some(cache) = &wildcard_c {
+                    let host_ips: Vec<IpAddr> = results
+                        .iter()
+                        .filter_map(|r| match r.record_type {
+                            RecordType::A | RecordType::Aaaa => r.value.parse::<IpAddr>().ok(),
+                            _ => None,
+                        })
+                        .collect();
+
+                    if !host_ips.is_empty() {
+                        let is_wildcard = cache
+                            .is_wildcard_match(
+                                &pool_c,
+                                &host,
+                                &host_ips,
+                                auto_wildcard,
+                                wd_c.as_deref().map(|s| s.as_str()),
+                            )
+                            .await;
+                        if is_wildcard {
+                            if !silent {
+                                eprintln!("[INFO] Dropping wildcard match: {host}");
+                            }
+                            continue;
+                        }
+                    }
+                }
+
                 if !results.is_empty() {
                     let _ = out_tx_c.send(WorkerOutput { host, results }).await;
                 }

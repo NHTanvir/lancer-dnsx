@@ -568,6 +568,7 @@ dependencies = [
  "async-channel",
  "clap",
  "hickory-resolver",
+ "rand",
  "serde",
  "serde_json",
  "tokio",
